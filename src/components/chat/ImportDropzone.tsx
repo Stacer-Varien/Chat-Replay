@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Archive, Upload, FileArchive, Loader2, AlertCircle } from "lucide-react";
+import { Archive, Upload, FileArchive, Loader2, AlertCircle, Download } from "lucide-react";
 import { CopyrightLabel } from "@/components/CopyrightLabel";
 import { parseChatGPTExportWithMetadata, type ParsedChatGPTExport } from "@/lib/chatgpt-import";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -16,6 +16,7 @@ interface ImportDropzoneProps {
   savedBackups?: InstalledBackupSummary[];
   onLoadBackup?: (id: string) => void | Promise<void>;
   importStatus?: string | null;
+  showDesktopDownload?: boolean;
 }
 
 function formatBackupDate(backup: InstalledBackupSummary): string {
@@ -35,6 +36,7 @@ export function ImportDropzone({
   savedBackups = [],
   onLoadBackup,
   importStatus,
+  showDesktopDownload = false,
 }: ImportDropzoneProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +65,18 @@ export function ImportDropzone({
   return (
     <div className="min-h-dvh bg-background px-4 py-4 text-foreground sm:px-6 sm:py-6">
       <div className="mx-auto flex w-full max-w-5xl items-center justify-end gap-2">
+        {showDesktopDownload && !installed && (
+          <a
+            href="https://github.com/Stacer-Varien/Chat-Replay/releases/tag/desktop"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+          >
+            <Download className="h-4 w-4" />
+            <span className="hidden sm:inline">Download desktop app</span>
+            <span className="sm:hidden">Download</span>
+          </a>
+        )}
         <Link
           to="/help"
           className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm transition-colors hover:bg-accent"
