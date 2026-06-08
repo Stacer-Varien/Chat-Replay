@@ -12,7 +12,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "build:dev": "vite build --mode development",
-    "build:vercel": "cross-env BUILD_TARGET=vercel VITE_BUILD_TARGET=vercel vite build",
+    "build:vercel": "cross-env BUILD_TARGET=vercel vite build",
     "build:android:web": "cross-env BUILD_TARGET=android vite build",
     "android:assets": "capacitor-assets generate --android --iconBackgroundColor \"#020817\" --iconBackgroundColorDark \"#020817\" --splashBackgroundColor \"#020817\" --splashBackgroundColorDark \"#020817\"",
     "android:sync": "npm run build:android:web && cap sync android",

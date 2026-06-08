@@ -16,7 +16,6 @@ interface ImportDropzoneProps {
   savedBackups?: InstalledBackupSummary[];
   onLoadBackup?: (id: string) => void | Promise<void>;
   importStatus?: string | null;
-  showDesktopDownload?: boolean;
 }
 
 function formatBackupDate(backup: InstalledBackupSummary): string {
@@ -36,7 +35,6 @@ export function ImportDropzone({
   savedBackups = [],
   onLoadBackup,
   importStatus,
-  showDesktopDownload = false,
 }: ImportDropzoneProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +63,7 @@ export function ImportDropzone({
   return (
     <div className="min-h-dvh bg-background px-4 py-4 text-foreground sm:px-6 sm:py-6">
       <div className="mx-auto flex w-full max-w-5xl items-center justify-end gap-2">
-        {showDesktopDownload && !installed && (
+        {!installed && (
           <a
             href="https://github.com/Stacer-Varien/Chat-Replay/releases/tag/desktop"
             target="_blank"

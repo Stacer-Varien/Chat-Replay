@@ -241,7 +241,6 @@ function Index() {
         savedBackups={savedBackups}
         onLoadBackup={loadSavedBackup}
         importStatus={importStatus}
-        showDesktopDownload={import.meta.env.VITE_BUILD_TARGET === "vercel"}
       />
     );
   }
