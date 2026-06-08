@@ -9,7 +9,7 @@ const { pathToFileURL } = require("node:url");
 const IPC = {
   listBackups: "chat-replay:list-backups",
   loadBackup: "chat-replay:load-backup",
-  importBackup: "chat-replay:import-backup",
+  saveBackup: "chat-replay:save-backup",
   deleteBackup: "chat-replay:delete-backup",
 };
 
@@ -212,6 +212,19 @@ function backupVersion(metadata) {
   );
 }
 
+function requestedDisplayName(value) {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned ? cleaned.slice(0, 80) : null;
+}
+
+function randomDisplayName() {
+  return `Saved Chats ${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+}
+
 function scrubConversationData(value) {
   if (Array.isArray(value)) return value.map(scrubConversationData);
   if (!value || typeof value !== "object") return value;
@@ -226,6 +239,10 @@ function scrubConversationData(value) {
 function summaryFromManifest(manifest) {
   return {
     id: manifest.id,
+    displayName:
+      requestedDisplayName(manifest.displayName) ??
+      requestedDisplayName(manifest.originalFileName) ??
+      "Saved Chats",
     originalFileName: manifest.originalFileName,
     archiveFileName: manifest.archiveFileName,
     importedAt: manifest.importedAt,
@@ -281,18 +298,24 @@ async function loadBackup(_event, id) {
     readJson(path.join(dir, "manifest.json")),
     readJson(path.join(dir, "conversations.json")),
   ]);
+  let archiveData = null;
+  try {
+    const archive = await fs.readFile(path.join(dir, manifest.archiveFileName));
+    archiveData = archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength);
+  } catch {
+    // Older or incomplete saved imports can still open without their source archive.
+  }
 
   return {
     backup: summaryFromManifest(manifest),
     conversations,
+    archiveData,
   };
 }
 
-async function importBackup(_event, payload) {
+async function saveBackup(_event, payload) {
   if (!payload?.permissionConfirmed) {
-    throw new Error(
-      "Confirm that you own this backup or have permission to view it before importing.",
-    );
+    throw new Error("Confirm that you own this backup or have permission before saving it.");
   }
 
   const archiveData = bufferFromPayload(payload.archiveData);
@@ -304,8 +327,14 @@ async function importBackup(_event, payload) {
   const version = backupVersion(metadata);
   const importedAt = Math.floor(Date.now() / 1000);
   const existing = await readManifest(normalizedId);
+  const requestedName = requestedDisplayName(payload.displayName);
 
   if (existing && version <= (finiteNumber(existing.version) ?? 0)) {
+    if (requestedName && requestedName !== existing.displayName) {
+      existing.displayName = requestedName;
+      existing.updatedAt = importedAt;
+      await writeJson(path.join(backupDir(normalizedId), "manifest.json"), existing);
+    }
     return {
       action: "kept-existing",
       backup: summaryFromManifest(existing),
@@ -329,6 +358,8 @@ async function importBackup(_event, payload) {
 
   const manifest = {
     id: normalizedId,
+    displayName:
+      requestedName ?? requestedDisplayName(existing?.displayName) ?? randomDisplayName(),
     originalFileName:
       typeof payload.fileName === "string" ? payload.fileName : (metadata.sourceName ?? "backup"),
     archiveFileName,
@@ -377,13 +408,14 @@ async function deleteBackup(_event, id) {
 function registerIpc() {
   ipcMain.handle(IPC.listBackups, listBackups);
   ipcMain.handle(IPC.loadBackup, loadBackup);
-  ipcMain.handle(IPC.importBackup, importBackup);
+  ipcMain.handle(IPC.saveBackup, saveBackup);
   ipcMain.handle(IPC.deleteBackup, deleteBackup);
 }
 
 async function createWindow() {
   const startUrl = process.env.ELECTRON_RENDERER_URL || (await createAppServer());
   const win = new BrowserWindow({
+    icon: path.join(appRoot(), "icon.png"),
     width: 1280,
     height: 820,
     minWidth: 940,
@@ -412,6 +444,7 @@ async function createWindow() {
 }
 
 registerIpc();
+app.setName("Chat Replay");
 
 app
   .whenReady()

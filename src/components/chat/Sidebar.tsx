@@ -136,7 +136,7 @@ export function Sidebar({
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-semibold">
           C
         </div>
-        <div className="min-w-0 flex-1 truncate text-sm font-semibold">ChatGPT Export Viewer</div>
+        <div className="min-w-0 flex-1 truncate text-sm font-semibold">Chat Replay</div>
         {onRequestClose && (
           <button
             type="button"

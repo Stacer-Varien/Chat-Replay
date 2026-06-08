@@ -15,6 +15,10 @@ function formatBytes(size: number | null) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function isMediaType(mimeType: string | null, prefix: "audio" | "video") {
+  return mimeType?.startsWith(`${prefix}/`) ?? false;
+}
+
 export function Message({ item, onPrev, onNext }: Props) {
   const { node, index, total } = item;
   const isUser = node.role === "user";
@@ -55,21 +59,44 @@ export function Message({ item, onPrev, onNext }: Props) {
               ) : null}
               {attachments.length > 0 && (
                 <div className={node.text ? "mt-3 space-y-2" : "space-y-2"}>
-                  {attachments.map((attachment) =>
-                    attachment.isImage && attachment.url ? (
-                      <a
-                        key={attachment.id}
-                        href={attachment.url}
-                        download={attachment.name}
-                        className="block overflow-hidden rounded-lg border bg-background/80"
-                      >
-                        <img
+                  {attachments.map((attachment) => {
+                    if (attachment.isImage && attachment.url) {
+                      return (
+                        <a
+                          key={attachment.id}
+                          href={attachment.url}
+                          download={attachment.name}
+                          className="block overflow-hidden rounded-lg border bg-background/80"
+                        >
+                          <img
+                            src={attachment.url}
+                            alt={attachment.name}
+                            className="max-h-80 max-w-full object-contain"
+                          />
+                        </a>
+                      );
+                    }
+                    if (attachment.url && isMediaType(attachment.mimeType, "video")) {
+                      return (
+                        <video
+                          key={attachment.id}
                           src={attachment.url}
-                          alt={attachment.name}
-                          className="max-h-80 max-w-full object-contain"
+                          controls
+                          className="max-h-96 max-w-full rounded-lg border bg-black"
                         />
-                      </a>
-                    ) : (
+                      );
+                    }
+                    if (attachment.url && isMediaType(attachment.mimeType, "audio")) {
+                      return (
+                        <audio
+                          key={attachment.id}
+                          src={attachment.url}
+                          controls
+                          className="max-w-full"
+                        />
+                      );
+                    }
+                    return (
                       <a
                         key={attachment.id}
                         href={attachment.url ?? undefined}
@@ -88,8 +115,8 @@ export function Message({ item, onPrev, onNext }: Props) {
                           </span>
                         )}
                       </a>
-                    ),
-                  )}
+                    );
+                  })}
                 </div>
               )}
             </div>

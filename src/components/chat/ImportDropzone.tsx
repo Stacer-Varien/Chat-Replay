@@ -1,32 +1,37 @@
 import { useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Archive, Upload, FileArchive, Loader2, AlertCircle, ShieldCheck } from "lucide-react";
+import { Archive, Upload, FileArchive, Loader2, AlertCircle } from "lucide-react";
 import { CopyrightLabel } from "@/components/CopyrightLabel";
 import { parseChatGPTExportWithMetadata, type ParsedChatGPTExport } from "@/lib/chatgpt-import";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import type { DesktopBackupSummary } from "@/types/electron";
+import type { InstalledBackupSummary } from "@/types/installed-app";
 
 interface ImportedFile extends ParsedChatGPTExport {
   file: File;
-  permissionConfirmed: boolean;
 }
 
 interface ImportDropzoneProps {
   onLoaded: (imported: ImportedFile) => void | Promise<void>;
-  desktop?: boolean;
-  savedBackups?: DesktopBackupSummary[];
+  installed?: boolean;
+  savedBackups?: InstalledBackupSummary[];
   onLoadBackup?: (id: string) => void | Promise<void>;
   importStatus?: string | null;
 }
 
-function formatBackupDate(backup: DesktopBackupSummary): string {
+function formatBackupDate(backup: InstalledBackupSummary): string {
   const ts = backup.exportedAt ?? backup.latestConversationUpdate ?? backup.updatedAt;
   return ts ? new Date(ts * 1000).toLocaleDateString() : "Saved import";
 }
 
+function importErrorMessage(error: unknown, file: File): string {
+  const detail = error instanceof Error ? error.message : String(error || "Unknown error");
+  const readableDetail = detail.replace(/^Couldn't read the file:\s*/i, "");
+  return `Couldn't import "${file.name}": ${readableDetail}`;
+}
+
 export function ImportDropzone({
   onLoaded,
-  desktop = false,
+  installed = false,
   savedBackups = [],
   onLoadBackup,
   importStatus,
@@ -34,23 +39,22 @@ export function ImportDropzone({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drag, setDrag] = useState(false);
-  const [permissionConfirmed, setPermissionConfirmed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File) {
     setError(null);
-    if (desktop && !permissionConfirmed) {
-      setError("Confirm that you own this backup or have permission to view it first.");
-      return;
-    }
-
     setBusy(true);
     try {
       const parsed = await parseChatGPTExportWithMetadata(file);
       if (!parsed.conversations.length) throw new Error("No conversations found in this export");
-      await onLoaded({ ...parsed, file, permissionConfirmed });
+      await onLoaded({ ...parsed, file });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to read export");
+      console.error("Chat export import failed", {
+        fileName: file.name,
+        fileSize: file.size,
+        error: e,
+      });
+      setError(importErrorMessage(e, file));
     } finally {
       setBusy(false);
     }
@@ -73,17 +77,17 @@ export function ImportDropzone({
             <FileArchive className="h-7 w-7" />
           </div>
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-            Upload your ChatGPT Export ZIP file
+            Upload your chat export
           </h1>
           <p className="mt-2 text-muted-foreground">
-            Choose the ZIP file you downloaded from ChatGPT or the OpenAI Privacy Portal. Nothing
-            gets uploaded to the server.
+            Choose a ChatGPT/OpenAI export, or a Google Takeout ZIP containing Gemini Apps activity.
+            Nothing gets uploaded to the server.
           </p>
 
-          {desktop && savedBackups.length > 0 && (
+          {installed && savedBackups.length > 0 && (
             <div className="mt-6 text-left">
               <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Saved desktop backups
+                Saved chats
               </div>
               <div className="space-y-2">
                 {savedBackups.map((backup) => (
@@ -96,36 +100,17 @@ export function ImportDropzone({
                     <Archive className="h-4 w-4 shrink-0 text-muted-foreground" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium">
-                        {backup.originalFileName}
+                        {backup.displayName}
                       </span>
                       <span className="block truncate text-xs text-muted-foreground">
-                        {backup.conversationCount} conversations · {formatBackupDate(backup)}
+                        {backup.originalFileName} · {backup.conversationCount} conversations ·{" "}
+                        {formatBackupDate(backup)}
                       </span>
                     </span>
                   </button>
                 ))}
               </div>
             </div>
-          )}
-
-          {desktop && (
-            <label className="mt-6 flex cursor-pointer items-start gap-3 rounded-lg border bg-muted/30 px-3 py-3 text-left text-sm">
-              <input
-                type="checkbox"
-                checked={permissionConfirmed}
-                onChange={(e) => setPermissionConfirmed(e.target.checked)}
-                className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
-              />
-              <span>
-                <span className="flex items-center gap-1.5 font-medium text-foreground">
-                  <ShieldCheck className="h-4 w-4" />
-                  Permission confirmed
-                </span>
-                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                  I own this backup or have permission from the owner to view it.
-                </span>
-              </span>
-            </label>
           )}
 
           <label
@@ -159,7 +144,7 @@ export function ImportDropzone({
                   <span className="text-muted-foreground">or drag it here</span>
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  ChatGPT Export ZIP, direct Conversations ZIP, or conversations JSON
+                  ChatGPT/OpenAI ZIP, Gemini Google Takeout ZIP, or conversations JSON
                 </div>
               </>
             )}
@@ -190,9 +175,9 @@ export function ImportDropzone({
           )}
 
           <p className="mt-6 text-xs text-muted-foreground">
-            {desktop
-              ? "Confirmed imports are saved locally inside this desktop app."
-              : "Your data stays on this device and is read locally in your browser."}
+            {installed
+              ? "Imports open temporarily. Use Save chats after opening one to keep it in the installed app."
+              : "Your data stays in this browser tab and is not saved by Chat Replay."}
           </p>
           <div className="mt-5">
             <CopyrightLabel />

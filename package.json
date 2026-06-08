@@ -1,7 +1,7 @@
 {
   "name": "chat-replay",
-  "version": "0.1.0",
-  "description": "Local ChatGPT export viewer with browser, Vercel, and Electron builds.",
+  "version": "1.2.0",
+  "description": "Local ChatGPT and Gemini export viewer with browser, Vercel, Electron, and Android builds.",
   "productName": "Chat Replay",
   "author": "Stacer Varien",
   "private": true,
@@ -13,6 +13,11 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "build:vercel": "cross-env BUILD_TARGET=vercel vite build",
+    "build:android:web": "cross-env BUILD_TARGET=android vite build",
+    "android:assets": "capacitor-assets generate --android --iconBackgroundColor \"#020817\" --iconBackgroundColorDark \"#020817\" --splashBackgroundColor \"#020817\" --splashBackgroundColorDark \"#020817\"",
+    "android:sync": "npm run build:android:web && cap sync android",
+    "android:open": "cap open android",
+    "android:build": "npm run android:sync && cd android && gradlew.bat assembleDebug",
     "preview": "vite preview",
     "electron": "electron .",
     "electron:dev": "concurrently -k \"vite dev --host 127.0.0.1 --port 5173 --strictPort\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron .\"",
@@ -30,9 +35,11 @@
     "files": [
       "dist/**",
       "electron/**",
+      "icon.png",
       "package.json"
     ],
     "win": {
+      "icon": "icon.png",
       "target": [
         "nsis"
       ],
@@ -40,6 +47,7 @@
     }
   },
   "dependencies": {
+    "@capacitor/core": "^8.4.0",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -99,6 +107,9 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.4.0",
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.4.0",
     "@eslint/js": "^9.32.0",
     "@lovable.dev/vite-tanstack-config": "^2.1.1",
     "@types/node": "^22.16.5",
