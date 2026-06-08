@@ -78,23 +78,40 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   head: () => ({
     meta: [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "ChatGPT Export Viewer" },
+      {
+        name: "viewport",
+        content: "width=device-width, initial-scale=1, viewport-fit=cover",
+      },
+      { title: "Chat Replay" },
+      { name: "application-name", content: "Chat Replay" },
       {
         name: "description",
-        content: "Upload your ChatGPT Export ZIP file and browse it locally in your browser.",
+        content: "Browse supported ChatGPT, OpenAI, and Gemini exports locally in your browser.",
       },
       { name: "author", content: "Stacer Varien" },
-      { property: "og:title", content: "ChatGPT Export Viewer" },
+      { property: "og:title", content: "Chat Replay" },
       {
         property: "og:description",
-        content: "Upload your ChatGPT Export ZIP file and browse it locally in your browser.",
+        content: "Browse supported ChatGPT, OpenAI, and Gemini exports locally in your browser.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
     ],
     links: [
+      {
+        rel: "icon",
+        type: "image/png",
+        href: "/icon.png",
+      },
+      {
+        rel: "apple-touch-icon",
+        href: "/icon.png",
+      },
+      {
+        rel: "manifest",
+        href: "/site.webmanifest",
+      },
       {
         rel: "stylesheet",
         href: appCss,

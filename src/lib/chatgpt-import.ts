@@ -27,6 +27,14 @@ export interface Conversation {
   title: string;
   createTime: number | null;
   updateTime: number | null;
+  /** Source conversation when this chat was created with ChatGPT's branch-in-new-chat feature. */
+  branchSourceId?: string;
+  branchSourceTitle?: string;
+  /** Last inherited visible message before this chat's own branch continuation begins. */
+  branchPointId?: string;
+  inheritedMessageCount?: number;
+  /** Separate conversations that were branched from this chat. */
+  branchChildren?: Array<{ id: string; title: string }>;
   /** Top-level visible message ids (children of the root/system node) */
   rootIds: string[];
   /** Map of id -> visible message (user/assistant only) */
@@ -35,7 +43,11 @@ export interface Conversation {
   defaultSelection: Record<string, number>;
 }
 
-export type ExportSourceKind = "chatgpt-export" | "openai-privacy-export" | "conversations-json";
+export type ExportSourceKind =
+  | "chatgpt-export"
+  | "openai-privacy-export"
+  | "conversations-json"
+  | "gemini-takeout";
 
 export interface ExportBackupMetadata {
   sourceName: string;
@@ -78,6 +90,8 @@ interface RawConversation {
   title?: string | null;
   conversation_id?: string;
   id?: string;
+  branching_from_conversation_id?: string | null;
+  branching_from_node_id?: string | null;
   create_time?: number | null;
   update_time?: number | null;
   mapping?: Record<string, RawNode> | null;
@@ -100,6 +114,19 @@ interface AssetSource {
 }
 
 type AssetCatalog = Map<string, MessageAttachment>;
+
+let fallbackId = 0;
+
+function randomId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+
+  fallbackId += 1;
+  return `chat-replay-${Date.now().toString(36)}-${fallbackId.toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
 
 function extractTextFragment(value: unknown): string {
   if (value == null) return "";
@@ -251,6 +278,34 @@ function mimeFromName(name: string | null): string | null {
       return "image/bmp";
     case "pdf":
       return "application/pdf";
+    case "doc":
+      return "application/msword";
+    case "docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case "xls":
+      return "application/vnd.ms-excel";
+    case "xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case "ppt":
+      return "application/vnd.ms-powerpoint";
+    case "pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case "zip":
+      return "application/zip";
+    case "wav":
+      return "audio/wav";
+    case "mp3":
+      return "audio/mpeg";
+    case "m4a":
+      return "audio/mp4";
+    case "ogg":
+      return "audio/ogg";
+    case "mp4":
+      return "video/mp4";
+    case "webm":
+      return "video/webm";
+    case "mov":
+      return "video/quicktime";
     case "csv":
       return "text/csv";
     case "json":
@@ -317,7 +372,7 @@ function extractAssetHints(message: NonNullable<RawNode["message"]>): AssetHint[
 function mergeAssetHints(hints: AssetHint[]): AssetHint[] {
   const merged = new Map<string, AssetHint>();
   for (const hint of hints) {
-    const key = lookupKey(hint.id) ?? `name:${lookupKey(hint.name) ?? crypto.randomUUID()}`;
+    const key = lookupKey(hint.id) ?? `name:${lookupKey(hint.name) ?? randomId()}`;
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, hint);
@@ -358,7 +413,7 @@ function resolveMessageAttachments(
     const resolved = assetCatalogKeys(hint)
       .map((key) => assets.get(key))
       .find(Boolean);
-    const id = hint.id ?? resolved?.id ?? hint.name ?? crypto.randomUUID();
+    const id = hint.id ?? resolved?.id ?? hint.name ?? randomId();
     const name = hint.name ?? resolved?.name ?? id;
     const mimeType = hint.mimeType ?? resolved?.mimeType ?? mimeFromName(name);
     return {
@@ -502,6 +557,81 @@ function buildTree(
   return { rootIds, nodes, defaultSelection };
 }
 
+function rawCurrentPath(raw: RawConversation): string[] {
+  const path: string[] = [];
+  const seen = new Set<string>();
+  let current = raw.current_node;
+
+  while (current && raw.mapping?.[current] && !seen.has(current)) {
+    seen.add(current);
+    path.push(current);
+    current = raw.mapping[current].parent;
+  }
+
+  return path.reverse();
+}
+
+function branchSourceTitle(title: string): string | null {
+  return /^Branch\s*[·-]\s*(.+)$/i.exec(title.trim())?.[1]?.trim() || null;
+}
+
+function inferBranchRelationships(
+  records: Array<{ raw: RawConversation; conversation: Conversation }>,
+) {
+  const byId = new Map(records.map((record) => [record.conversation.id, record]));
+
+  for (const branch of records) {
+    const explicitSource = branch.raw.branching_from_conversation_id
+      ? byId.get(branch.raw.branching_from_conversation_id)
+      : undefined;
+    const expectedTitle = branchSourceTitle(branch.conversation.title);
+    const candidates = explicitSource
+      ? [explicitSource]
+      : expectedTitle
+        ? records.filter(
+            (candidate) =>
+              candidate !== branch &&
+              candidate.conversation.title.localeCompare(expectedTitle, undefined, {
+                sensitivity: "base",
+              }) === 0 &&
+              (candidate.conversation.createTime ?? 0) <= (branch.conversation.createTime ?? 0),
+          )
+        : [];
+
+    const branchPath = rawCurrentPath(branch.raw);
+    const ranked = candidates
+      .map((source) => {
+        const sourceNodes = new Set(Object.keys(source.raw.mapping ?? {}));
+        let inheritedNodes = 0;
+        while (inheritedNodes < branchPath.length && sourceNodes.has(branchPath[inheritedNodes])) {
+          inheritedNodes += 1;
+        }
+        return { source, inheritedNodes };
+      })
+      .filter(({ inheritedNodes }) => inheritedNodes > 0)
+      .sort((a, b) => b.inheritedNodes - a.inheritedNodes);
+    const match = ranked[0];
+    if (!match) continue;
+
+    const inheritedPath = branchPath.slice(0, match.inheritedNodes);
+    const explicitPoint = branch.raw.branching_from_node_id;
+    const branchPointId =
+      (explicitPoint && branch.conversation.nodes[explicitPoint] ? explicitPoint : undefined) ??
+      [...inheritedPath].reverse().find((id) => branch.conversation.nodes[id]);
+
+    branch.conversation.branchSourceId = match.source.conversation.id;
+    branch.conversation.branchSourceTitle = match.source.conversation.title;
+    branch.conversation.branchPointId = branchPointId;
+    branch.conversation.inheritedMessageCount = inheritedPath.filter(
+      (id) => branch.conversation.nodes[id],
+    ).length;
+    match.source.conversation.branchChildren = [
+      ...(match.source.conversation.branchChildren ?? []),
+      { id: branch.conversation.id, title: branch.conversation.title },
+    ];
+  }
+}
+
 export function normalizeConversations(
   raw: unknown,
   assets: AssetCatalog = new Map(),
@@ -509,20 +639,25 @@ export function normalizeConversations(
   if (!Array.isArray(raw)) {
     throw new Error("Unexpected format: conversations.json should be a JSON array");
   }
-  const result: Conversation[] = [];
+  const records: Array<{ raw: RawConversation; conversation: Conversation }> = [];
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const c = item as RawConversation;
     const tree = buildTree(c, assets);
     if (!tree.rootIds.length) continue;
-    result.push({
-      id: c.conversation_id || c.id || crypto.randomUUID(),
-      title: (c.title || "").trim() || "Untitled conversation",
-      createTime: c.create_time ?? null,
-      updateTime: c.update_time ?? null,
-      ...tree,
+    records.push({
+      raw: c,
+      conversation: {
+        id: c.conversation_id || c.id || randomId(),
+        title: (c.title || "").trim() || "Untitled conversation",
+        createTime: c.create_time ?? null,
+        updateTime: c.update_time ?? null,
+        ...tree,
+      },
     });
   }
+  inferBranchRelationships(records);
+  const result = records.map(({ conversation }) => conversation);
   result.sort((a, b) => (b.updateTime ?? 0) - (a.updateTime ?? 0));
   return result;
 }
@@ -830,6 +965,367 @@ async function parseOpenAIPrivacyExport(zip: JSZip): Promise<Conversation[]> {
   return conversationsFromRaw(raw, sources);
 }
 
+interface GeminiAssetIndex {
+  entries: JSZip.JSZipObject[];
+  byName: Map<string, JSZip.JSZipObject>;
+  byStem: Map<string, JSZip.JSZipObject>;
+  byHash: Map<string, JSZip.JSZipObject[]>;
+  attachments: Map<string, MessageAttachment>;
+}
+
+interface GeminiMediaReference {
+  path: string;
+  displayName: string | null;
+}
+
+const GEMINI_ACTIVITY_PATH = /(^|\/)my activity\/gemini apps\/myactivity\.html$/i;
+const GEMINI_DATE_RE =
+  /((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4},\s+\d{1,2}:\d{2}:\d{2}[\s\u00a0\u202f]+(?:AM|PM)(?:[\s\u00a0\u202f]+[A-Z]{2,6})?)<br>/i;
+
+function isGeminiActivityPath(path: string): boolean {
+  return GEMINI_ACTIVITY_PATH.test(normalizeArchivePath(path));
+}
+
+function decodeHtml(value: string): string {
+  const named: Record<string, string> = {
+    amp: "&",
+    apos: "'",
+    gt: ">",
+    lt: "<",
+    nbsp: " ",
+    quot: '"',
+  };
+  return value.replace(/&(#(?:x[0-9a-f]+|\d+)|[a-z]+);/gi, (match, entity: string) => {
+    if (entity.startsWith("#")) {
+      const hex = entity[1]?.toLowerCase() === "x";
+      const codePoint = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : match;
+    }
+    return named[entity.toLowerCase()] ?? match;
+  });
+}
+
+function htmlToText(value: string): string {
+  return decodeHtml(
+    value
+      .replace(/<\s*br\s*\/?>/gi, "\n")
+      .replace(/<\s*\/p\s*>/gi, "\n\n")
+      .replace(/<\s*\/(?:h[1-6]|blockquote|pre)\s*>/gi, "\n\n")
+      .replace(/<\s*li[^>]*>/gi, "- ")
+      .replace(/<\s*\/li\s*>/gi, "\n")
+      .replace(/<[^>]+>/g, ""),
+  )
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function safeDecodeUriComponent(value: string): string {
+  try {
+    return decodeURIComponent(decodeHtml(value));
+  } catch {
+    return decodeHtml(value);
+  }
+}
+
+function mediaHash(name: string): string | null {
+  return /-([a-f0-9]{16})(?:\.[^.]+)?$/i.exec(basename(name))?.[1]?.toLowerCase() ?? null;
+}
+
+function buildGeminiAssetIndex(zip: JSZip, activityEntry: JSZip.JSZipObject): GeminiAssetIndex {
+  const directory = normalizeArchivePath(activityEntry.name).replace(/[^/]+$/, "");
+  const index: GeminiAssetIndex = {
+    entries: [],
+    byName: new Map(),
+    byStem: new Map(),
+    byHash: new Map(),
+    attachments: new Map(),
+  };
+
+  for (const entry of zipEntries(zip)) {
+    const path = normalizeArchivePath(entry.name);
+    if (!path.toLowerCase().startsWith(directory.toLowerCase()) || isGeminiActivityPath(path)) {
+      continue;
+    }
+    index.entries.push(entry);
+
+    for (const name of [path, basename(path)]) {
+      const key = lookupKey(name);
+      if (key && !index.byName.has(key)) index.byName.set(key, entry);
+      const stem = lookupKey(stripExtension(name));
+      if (stem && !index.byStem.has(stem)) index.byStem.set(stem, entry);
+    }
+
+    const hash = mediaHash(path);
+    if (hash) {
+      const matches = index.byHash.get(hash) ?? [];
+      matches.push(entry);
+      index.byHash.set(hash, matches);
+    }
+  }
+
+  return index;
+}
+
+function extractGeminiMediaReferences(html: string): GeminiMediaReference[] {
+  const references: GeminiMediaReference[] = [];
+  const seen = new Set<string>();
+  const tags =
+    /<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>|<(?:img|video|audio|source)[^>]+src="([^"]+)"/gi;
+
+  for (const match of html.matchAll(tags)) {
+    const path = safeDecodeUriComponent(match[1] ?? match[3] ?? "").trim();
+    if (!path || /^[a-z][a-z0-9+.-]*:\/\//i.test(path) || path.startsWith("data:")) continue;
+    const key = lookupKey(path);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    references.push({
+      path,
+      displayName: match[2] ? htmlToText(match[2]) || null : null,
+    });
+  }
+
+  for (const match of html.matchAll(
+    /(?:file (?:you can reference )?named|reference named|file named)\s*(?:&quot;|"|')([^"'<]+?)(?:&quot;|"|')/gi,
+  )) {
+    const path = decodeHtml(match[1]).trim();
+    const key = lookupKey(path);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    references.push({ path, displayName: path });
+  }
+
+  return references;
+}
+
+function resolveGeminiAsset(
+  reference: GeminiMediaReference,
+  index: GeminiAssetIndex,
+): JSZip.JSZipObject | null {
+  const name = basename(reference.path);
+  const exact =
+    index.byName.get(lookupKey(reference.path) ?? "") ??
+    index.byName.get(lookupKey(name) ?? "") ??
+    index.byStem.get(lookupKey(stripExtension(name)) ?? "");
+  if (exact) return exact;
+
+  const displayStem = stripExtension(name)
+    .replace(/-[a-f0-9]{16}$/i, "")
+    .toLowerCase();
+  const displayStemMatches = index.entries.filter(
+    (entry) =>
+      stripExtension(basename(entry.name))
+        .replace(/-[a-f0-9]{16}$/i, "")
+        .toLowerCase() === displayStem,
+  );
+  if (displayStemMatches.length === 1) return displayStemMatches[0];
+
+  const hash = mediaHash(name);
+  if (hash) {
+    const matches = index.byHash.get(hash) ?? [];
+    const nonZip = matches.find((entry) => extensionOf(entry.name) !== "zip");
+    if (nonZip) return nonZip;
+  }
+
+  const generatedImageId = /^(watermarked_img_\d{16,})/i.exec(stripExtension(name))?.[1];
+  if (generatedImageId) {
+    const prefix = generatedImageId.slice(0, Math.min(generatedImageId.length, 31)).toLowerCase();
+    const matches = new Map(
+      [...index.byName.entries()]
+        .filter(([key]) => basename(key).startsWith(prefix))
+        .map(([, entry]) => [entry.name, entry]),
+    );
+    if (matches.size === 1) return [...matches.values()][0];
+  }
+
+  return null;
+}
+
+async function geminiAttachment(
+  entry: JSZip.JSZipObject,
+  displayName: string | null,
+  index: GeminiAssetIndex,
+): Promise<MessageAttachment> {
+  const cached = index.attachments.get(entry.name);
+  if (cached) return displayName ? { ...cached, name: displayName } : cached;
+
+  const name = displayName ?? basename(entry.name);
+  const mimeType = mimeFromName(name) ?? mimeFromName(entry.name);
+  const data = await entry.async("arraybuffer");
+  const blob = new Blob([data], mimeType ? { type: mimeType } : undefined);
+  const attachment: MessageAttachment = {
+    id: entry.name,
+    name,
+    mimeType,
+    size: data.byteLength,
+    width: null,
+    height: null,
+    url: URL.createObjectURL(blob),
+    isImage: isImageAsset(mimeType, name),
+  };
+  index.attachments.set(entry.name, attachment);
+  return attachment;
+}
+
+async function resolveGeminiAttachments(
+  html: string,
+  index: GeminiAssetIndex,
+  includeNamedAssets = false,
+  excludedEntries: Set<string> = new Set(),
+): Promise<MessageAttachment[]> {
+  const entries = new Map<string, { entry: JSZip.JSZipObject; displayName: string | null }>();
+
+  for (const reference of extractGeminiMediaReferences(html)) {
+    const entry = resolveGeminiAsset(reference, index);
+    if (!entry) continue;
+    entries.set(entry.name, { entry, displayName: reference.displayName });
+
+    const hash = mediaHash(entry.name);
+    const matchingZip = hash
+      ? (index.byHash.get(hash) ?? []).find((candidate) => extensionOf(candidate.name) === "zip")
+      : null;
+    if (matchingZip) {
+      entries.set(matchingZip.name, {
+        entry: matchingZip,
+        displayName: `Video frames (${basename(matchingZip.name)})`,
+      });
+    }
+  }
+
+  if (includeNamedAssets) {
+    const normalizedHtml = htmlToText(html)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ");
+    for (const entry of index.entries) {
+      if (excludedEntries.has(entry.name) || entries.has(entry.name)) continue;
+      const name = basename(entry.name).replace(/-([a-f0-9]{16})(\.[^.]+)$/i, "$2");
+      const normalizedName = name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+      const normalizedStem = stripExtension(name)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+      if (
+        (normalizedName.length >= 12 && normalizedHtml.includes(normalizedName)) ||
+        (normalizedStem.length >= 16 && normalizedHtml.includes(normalizedStem))
+      ) {
+        entries.set(entry.name, { entry, displayName: name });
+      }
+    }
+  }
+
+  return Promise.all(
+    [...entries.values()].map(({ entry, displayName }) =>
+      geminiAttachment(entry, displayName, index),
+    ),
+  );
+}
+
+function stableGeminiId(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function geminiTimestamp(value: string): number | null {
+  const normalized = decodeHtml(value)
+    .replace(/[\u00a0\u202f]/g, " ")
+    .replace(/\s+[A-Z]{2,6}$/i, "")
+    .trim();
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null;
+}
+
+async function parseGeminiTakeout(
+  zip: JSZip,
+  activityEntry: JSZip.JSZipObject,
+): Promise<Conversation[]> {
+  const html = await activityEntry.async("string");
+  const cardPattern =
+    /<div class="outer-cell[^>]*">[\s\S]*?<div class="content-cell mdl-cell mdl-cell--6-col mdl-typography--body-1">([\s\S]*?)<\/div><div class="content-cell mdl-cell mdl-cell--6-col mdl-typography--body-1 mdl-typography--text-right">/gi;
+  const cards = [...html.matchAll(cardPattern)].map((match) => match[1]);
+  const assets = buildGeminiAssetIndex(zip, activityEntry);
+  const conversations: Conversation[] = [];
+
+  for (const [cardIndex, card] of cards.entries()) {
+    const dateMatch = GEMINI_DATE_RE.exec(card);
+    if (!dateMatch?.[1] || dateMatch.index === undefined) continue;
+
+    const beforeDate = card.slice(0, dateMatch.index);
+    const responseHtml = card.slice(dateMatch.index + dateMatch[0].length);
+    const promptEnd = beforeDate.search(/<br\s*\/?>/i);
+    const promptHtml = (promptEnd >= 0 ? beforeDate.slice(0, promptEnd) : beforeDate).replace(
+      /^Prompted[\s\u00a0]*/i,
+      "",
+    );
+    const prompt = htmlToText(promptHtml);
+    const promptMetadata = promptEnd >= 0 ? beforeDate.slice(promptEnd) : "";
+    const response = htmlToText(responseHtml);
+    const userAttachments = await resolveGeminiAttachments(promptMetadata, assets);
+    const assistantAttachments = await resolveGeminiAttachments(
+      responseHtml,
+      assets,
+      true,
+      new Set(userAttachments.map((attachment) => attachment.id)),
+    );
+    if (!prompt && !response && !userAttachments.length && !assistantAttachments.length) continue;
+
+    const timestamp = geminiTimestamp(dateMatch[1]);
+    const conversationId = `gemini-${stableGeminiId(
+      `${dateMatch[1]}|${prompt}`,
+    )}-${cardIndex.toString(36)}`;
+    const userId = `${conversationId}-user`;
+    const assistantId = `${conversationId}-assistant`;
+    const hasAssistant = Boolean(response || assistantAttachments.length);
+    const title =
+      prompt.replace(/\s+/g, " ").trim().slice(0, 90) ||
+      `Gemini activity${timestamp ? ` ${new Date(timestamp * 1000).toLocaleDateString()}` : ""}`;
+
+    conversations.push({
+      id: conversationId,
+      title,
+      createTime: timestamp,
+      updateTime: timestamp,
+      rootIds: [userId],
+      nodes: {
+        [userId]: {
+          id: userId,
+          role: "user",
+          text: prompt,
+          createTime: timestamp,
+          childrenIds: hasAssistant ? [assistantId] : [],
+          attachments: userAttachments,
+        },
+        ...(hasAssistant
+          ? {
+              [assistantId]: {
+                id: assistantId,
+                role: "assistant" as const,
+                text: response,
+                createTime: timestamp,
+                childrenIds: [],
+                attachments: assistantAttachments,
+              },
+            }
+          : {}),
+      },
+      defaultSelection: {},
+    });
+  }
+
+  if (!conversations.length) {
+    throw new Error("No readable Gemini activity found in MyActivity.html");
+  }
+  conversations.sort((a, b) => (b.updateTime ?? 0) - (a.updateTime ?? 0));
+  return conversations;
+}
+
 function secondsFromFileLastModified(file: File): number | null {
   return Number.isFinite(file.lastModified) && file.lastModified > 0
     ? Math.floor(file.lastModified / 1000)
@@ -866,7 +1362,15 @@ function hexFromBuffer(buffer: ArrayBuffer): string {
 
 async function sha256Text(value: string): Promise<string> {
   const data = new TextEncoder().encode(value);
-  return hexFromBuffer(await crypto.subtle.digest("SHA-256", data));
+  if (globalThis.crypto?.subtle) {
+    try {
+      return hexFromBuffer(await globalThis.crypto.subtle.digest("SHA-256", data));
+    } catch {
+      // Some embedded or non-secure browser contexts expose crypto without a usable SubtleCrypto.
+    }
+  }
+
+  return Array.from({ length: 8 }, (_, index) => stableGeminiId(`${index}:${value}`)).join("");
 }
 
 async function userIdentityFromZip(
@@ -890,10 +1394,26 @@ async function userIdentityFromZip(
 function filenameIdentity(
   name: string,
 ): { kind: ExportBackupMetadata["identityKind"]; source: string } | null {
-  const match =
-    /^([a-f0-9]{32,96})-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}/i.exec(name) ??
-    /^([a-f0-9]{32,96})/i.exec(name);
+  const match = /^(?:conversations__)?([a-f0-9]{32,96})(?:-|$)/i.exec(basename(name));
   return match?.[1] ? { kind: "filename", source: `filename:${match[1].toLowerCase()}` } : null;
+}
+
+async function nestedConversationIdentity(
+  zip: JSZip,
+): Promise<{ kind: ExportBackupMetadata["identityKind"]; source: string } | null> {
+  for (const entry of zipEntries(zip)) {
+    if (!isNamedNestedZip(entry, "Conversations__")) continue;
+    try {
+      const nestedZip = await loadNestedZip(entry);
+      const userIdentity = await userIdentityFromZip(nestedZip);
+      if (userIdentity) return userIdentity;
+    } catch {
+      // Fall back to the stable id embedded in the conversation archive filename.
+    }
+    const filename = filenameIdentity(entry.name);
+    if (filename) return filename;
+  }
+  return null;
 }
 
 async function buildBackupMetadata(
@@ -905,6 +1425,7 @@ async function buildBackupMetadata(
   const identity =
     (zip ? await userIdentityFromZip(zip) : null) ??
     filenameIdentity(file.name) ??
+    (zip ? await nestedConversationIdentity(zip) : null) ??
     ({ kind: "file", source: `file:${file.name}:${file.size}` } as const);
 
   return {
@@ -922,18 +1443,25 @@ async function buildBackupMetadata(
 
 async function parseZipFileWithMetadata(file: File): Promise<ParsedChatGPTExport> {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const geminiActivityEntry = zipEntries(zip).find((entry) => isGeminiActivityPath(entry.name));
   const hasUserOnlineActivity = zipEntries(zip).some((entry) =>
     isUserOnlineActivityPath(entry.name),
   );
-  const conversations = hasUserOnlineActivity
-    ? await parseOpenAIPrivacyExport(zip)
-    : await parseConversationZip(zip);
+  const conversations = geminiActivityEntry
+    ? await parseGeminiTakeout(zip, geminiActivityEntry)
+    : hasUserOnlineActivity
+      ? await parseOpenAIPrivacyExport(zip)
+      : await parseConversationZip(zip);
   return {
     conversations,
     metadata: await buildBackupMetadata(
       file,
       conversations,
-      hasUserOnlineActivity ? "openai-privacy-export" : "chatgpt-export",
+      geminiActivityEntry
+        ? "gemini-takeout"
+        : hasUserOnlineActivity
+          ? "openai-privacy-export"
+          : "chatgpt-export",
       zip,
     ),
   };

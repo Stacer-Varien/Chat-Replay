@@ -3,34 +3,41 @@ import { useEffect, useState } from "react";
 import { ImportDropzone } from "@/components/chat/ImportDropzone";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { ConversationView } from "@/components/chat/ConversationView";
-import { computeChain, type Conversation, type ParsedChatGPTExport } from "@/lib/chatgpt-import";
-import type { DesktopBackupSummary } from "@/types/electron";
+import {
+  computeChain,
+  parseChatGPTExportWithMetadata,
+  type Conversation,
+  type ParsedChatGPTExport,
+} from "@/lib/chatgpt-import";
+import { getInstalledBackupApi } from "@/lib/installed-backups";
+import type {
+  InstalledBackupApi,
+  InstalledBackupPayload,
+  InstalledBackupSummary,
+} from "@/types/installed-app";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "ChatGPT Export Viewer" },
+      { title: "Chat Replay" },
       {
         name: "description",
         content:
-          "Upload your ChatGPT Export ZIP file and browse it locally in your browser. Nothing gets uploaded to the server.",
+          "Browse supported ChatGPT, OpenAI, and Gemini exports locally in your browser. Nothing gets uploaded to the server.",
       },
-      { property: "og:title", content: "ChatGPT Export Viewer" },
+      { property: "og:title", content: "Chat Replay" },
       {
         property: "og:description",
         content:
-          "Browse your exported ChatGPT history locally in your browser. Nothing gets uploaded to the server.",
+          "Browse exported ChatGPT and Gemini history locally in your browser. Nothing gets uploaded to the server.",
       },
     ],
   }),
   component: Index,
 });
 
-const STORAGE_KEY = "chatgpt-archive-v1";
-
 type ImportedFile = ParsedChatGPTExport & {
   file: File;
-  permissionConfirmed: boolean;
 };
 
 function hasRenderableAssistantMessages(conversations: Conversation[]) {
@@ -44,56 +51,65 @@ function hasRenderableAssistantMessages(conversations: Conversation[]) {
   );
 }
 
+async function restoreInstalledConversations(
+  loaded: InstalledBackupPayload,
+): Promise<Conversation[]> {
+  if (!loaded.archiveData) return loaded.conversations;
+  try {
+    const source = new File([loaded.archiveData], loaded.backup.originalFileName);
+    const parsed = await parseChatGPTExportWithMetadata(source);
+    return hasRenderableAssistantMessages(parsed.conversations)
+      ? parsed.conversations
+      : loaded.conversations;
+  } catch {
+    return loaded.conversations;
+  }
+}
+
 function Index() {
   const [conversations, setConversations] = useState<Conversation[] | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [desktopBackups, setDesktopBackups] = useState<DesktopBackupSummary[]>([]);
-  const [activeBackup, setActiveBackup] = useState<DesktopBackupSummary | null>(null);
+  const [installedApi, setInstalledApi] = useState<InstalledBackupApi | null>(null);
+  const [savedBackups, setSavedBackups] = useState<InstalledBackupSummary[]>([]);
+  const [activeBackup, setActiveBackup] = useState<InstalledBackupSummary | null>(null);
+  const [pendingImport, setPendingImport] = useState<ImportedFile | null>(null);
   const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [savePermissionConfirmed, setSavePermissionConfirmed] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function hydrateDesktop() {
-      const api = window.chatReplayDesktop;
-      if (!api) return false;
+    async function hydrateInstalledApp() {
+      const api = getInstalledBackupApi();
+      if (!api) return;
+      setInstalledApi(api);
 
       const backups = await api.listBackups();
-      if (cancelled) return true;
-      setDesktopBackups(backups);
+      if (cancelled) return;
+      setSavedBackups(backups);
 
       const first = backups[0];
       if (first) {
         const loaded = await api.loadBackup(first.id);
-        if (cancelled) return true;
-        if (hasRenderableAssistantMessages(loaded.conversations)) {
-          setConversations(loaded.conversations);
-          setActiveId(loaded.conversations[0]?.id ?? null);
+        if (cancelled) return;
+        const restored = await restoreInstalledConversations(loaded);
+        if (cancelled) return;
+        if (hasRenderableAssistantMessages(restored)) {
+          setConversations(restored);
+          setActiveId(restored[0]?.id ?? null);
           setActiveBackup(loaded.backup);
         }
       }
-
-      return true;
     }
 
     async function hydrate() {
       try {
-        if (await hydrateDesktop()) return;
-
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw) as Conversation[];
-          if (Array.isArray(parsed) && parsed.length) {
-            if (hasRenderableAssistantMessages(parsed)) {
-              setConversations(parsed);
-              setActiveId(parsed[0].id);
-            } else {
-              localStorage.removeItem(STORAGE_KEY);
-            }
-          }
-        }
+        await hydrateInstalledApp();
       } catch {
         // ignore bad saved state
       } finally {
@@ -107,25 +123,27 @@ function Index() {
     };
   }, []);
 
-  async function refreshDesktopBackups() {
-    const backups = (await window.chatReplayDesktop?.listBackups()) ?? [];
-    setDesktopBackups(backups);
+  async function refreshSavedBackups() {
+    const backups = (await installedApi?.listBackups()) ?? [];
+    setSavedBackups(backups);
     return backups;
   }
 
-  async function loadDesktopBackup(id: string) {
-    const api = window.chatReplayDesktop;
+  async function loadSavedBackup(id: string) {
+    const api = installedApi;
     if (!api) return;
 
     setImportStatus(null);
     try {
       const loaded = await api.loadBackup(id);
-      if (!hasRenderableAssistantMessages(loaded.conversations)) {
+      const restored = await restoreInstalledConversations(loaded);
+      if (!hasRenderableAssistantMessages(restored)) {
         throw new Error("This saved backup has no readable assistant messages.");
       }
-      setConversations(loaded.conversations);
-      setActiveId(loaded.conversations[0]?.id ?? null);
+      setConversations(restored);
+      setActiveId(restored[0]?.id ?? null);
       setActiveBackup(loaded.backup);
+      setPendingImport(null);
       setMobileSidebarOpen(false);
     } catch (e) {
       setImportStatus(e instanceof Error ? e.message : "Failed to open saved backup.");
@@ -133,66 +151,77 @@ function Index() {
   }
 
   async function handleLoaded(imported: ImportedFile) {
-    const api = window.chatReplayDesktop;
     setImportStatus(null);
-
-    if (api) {
-      const result = await api.importBackup({
-        fileName: imported.file.name,
-        archiveData: await imported.file.arrayBuffer(),
-        conversations: imported.conversations,
-        permissionConfirmed: imported.permissionConfirmed,
-        metadata: imported.metadata,
-      });
-      await refreshDesktopBackups();
-      await loadDesktopBackup(result.backup.id);
-      setImportStatus(
-        result.action === "kept-existing"
-          ? "An equal or newer version of this backup is already saved."
-          : result.action === "replaced"
-            ? "Saved backup updated with the newer export."
-            : "Backup saved in the desktop app.",
-      );
-      return;
-    }
-
     setConversations(imported.conversations);
     setActiveId(imported.conversations[0]?.id ?? null);
+    setActiveBackup(null);
+    setPendingImport(installedApi ? imported : null);
+    if (installedApi) {
+      setImportStatus("Imported temporarily. Choose Save chats to keep this collection.");
+    }
+  }
+
+  async function savePendingImport() {
+    const api = installedApi;
+    if (!api || !pendingImport || !savePermissionConfirmed) return;
+
+    setSaving(true);
+    setImportStatus(null);
     try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify(imported.conversations, (key, value) => (key === "url" ? null : value)),
+      const result = await api.saveBackup({
+        displayName: saveName,
+        fileName: pendingImport.file.name,
+        archiveData: await pendingImport.file.arrayBuffer(),
+        conversations: pendingImport.conversations,
+        permissionConfirmed: savePermissionConfirmed,
+        metadata: pendingImport.metadata,
+      });
+      await refreshSavedBackups();
+      setActiveBackup(result.backup);
+      setPendingImport(null);
+      setSaveDialogOpen(false);
+      setSaveName("");
+      setSavePermissionConfirmed(false);
+      setImportStatus(
+        result.action === "kept-existing"
+          ? `"${result.backup.displayName}" was already saved with an equal or newer export.`
+          : result.action === "replaced"
+            ? `"${result.backup.displayName}" was updated with the newer export.`
+            : `"${result.backup.displayName}" was saved in the installed app.`,
       );
-    } catch {
-      // ignore quota errors
+    } catch (e) {
+      setImportStatus(e instanceof Error ? e.message : "Failed to save chats.");
+    } finally {
+      setSaving(false);
     }
   }
 
   async function handleClear() {
-    const api = window.chatReplayDesktop;
+    const api = installedApi;
     if (api && activeBackup) {
-      if (!confirm(`Remove "${activeBackup.originalFileName}" from this desktop app?`)) return;
+      if (!confirm(`Remove "${activeBackup.displayName}" from this installed app?`)) return;
       await api.deleteBackup(activeBackup.id);
-      const backups = await refreshDesktopBackups();
+      const backups = await refreshSavedBackups();
       setConversations(null);
       setActiveId(null);
       setActiveBackup(null);
       setMobileSidebarOpen(false);
-      if (backups[0]) await loadDesktopBackup(backups[0].id);
+      if (backups[0]) await loadSavedBackup(backups[0].id);
       return;
     }
 
-    if (!confirm("Clear all imported conversations from this browser?")) return;
-    localStorage.removeItem(STORAGE_KEY);
+    if (!confirm("Close the currently imported conversations?")) return;
     setConversations(null);
     setActiveId(null);
     setActiveBackup(null);
+    setPendingImport(null);
     setMobileSidebarOpen(false);
   }
 
   function handleReimport() {
     setConversations(null);
     setActiveBackup(null);
+    setPendingImport(null);
     setImportStatus(null);
     setMobileSidebarOpen(false);
   }
@@ -208,9 +237,9 @@ function Index() {
     return (
       <ImportDropzone
         onLoaded={handleLoaded}
-        desktop={Boolean(window.chatReplayDesktop)}
-        savedBackups={desktopBackups}
-        onLoadBackup={loadDesktopBackup}
+        installed={Boolean(installedApi)}
+        savedBackups={savedBackups}
+        onLoadBackup={loadSavedBackup}
         importStatus={importStatus}
       />
     );
@@ -219,33 +248,122 @@ function Index() {
   const active = conversations.find((c) => c.id === activeId) ?? null;
 
   return (
-    <div className="flex h-dvh min-h-dvh w-full overflow-hidden bg-background text-foreground">
-      <button
-        type="button"
-        aria-label="Close conversation list"
-        aria-hidden={!mobileSidebarOpen}
-        tabIndex={mobileSidebarOpen ? 0 : -1}
-        onClick={() => setMobileSidebarOpen(false)}
-        className={`fixed inset-0 z-40 bg-foreground/20 backdrop-blur-sm transition-opacity md:hidden ${
-          mobileSidebarOpen ? "opacity-100" : "pointer-events-none opacity-0"
-        }`}
-      />
-      <Sidebar
-        conversations={conversations}
-        activeId={activeId}
-        onSelect={handleSelect}
-        onReimport={handleReimport}
-        onClear={handleClear}
-        onRequestClose={() => setMobileSidebarOpen(false)}
-        className={`fixed inset-y-0 left-0 z-50 w-[min(20rem,calc(100vw-1rem))] shadow-xl transition-transform duration-200 sm:w-80 md:static md:z-auto md:w-72 md:translate-x-0 md:shadow-none lg:w-80 ${
-          mobileSidebarOpen
-            ? "visible translate-x-0 pointer-events-auto"
-            : "invisible -translate-x-full pointer-events-none md:visible md:pointer-events-auto"
-        }`}
-      />
-      <main className="min-w-0 flex-1 overflow-hidden">
-        <ConversationView conversation={active} onOpenSidebar={() => setMobileSidebarOpen(true)} />
-      </main>
-    </div>
+    <>
+      <div className="flex h-dvh min-h-dvh w-full overflow-hidden bg-background text-foreground">
+        <button
+          type="button"
+          aria-label="Close conversation list"
+          aria-hidden={!mobileSidebarOpen}
+          tabIndex={mobileSidebarOpen ? 0 : -1}
+          onClick={() => setMobileSidebarOpen(false)}
+          className={`fixed inset-0 z-40 bg-foreground/20 backdrop-blur-sm transition-opacity md:hidden ${
+            mobileSidebarOpen ? "opacity-100" : "pointer-events-none opacity-0"
+          }`}
+        />
+        <Sidebar
+          conversations={conversations}
+          activeId={activeId}
+          onSelect={handleSelect}
+          onReimport={handleReimport}
+          onClear={handleClear}
+          onRequestClose={() => setMobileSidebarOpen(false)}
+          className={`fixed inset-y-0 left-0 z-50 w-[min(20rem,calc(100vw-1rem))] shadow-xl transition-transform duration-200 sm:w-80 md:static md:z-auto md:w-72 md:translate-x-0 md:shadow-none lg:w-80 ${
+            mobileSidebarOpen
+              ? "visible translate-x-0 pointer-events-auto"
+              : "invisible -translate-x-full pointer-events-none md:visible md:pointer-events-auto"
+          }`}
+        />
+        <main className="min-w-0 flex-1 overflow-hidden">
+          <ConversationView
+            conversation={active}
+            onOpenSidebar={() => setMobileSidebarOpen(true)}
+            onSelectConversation={handleSelect}
+            savedName={activeBackup?.displayName}
+            onSave={
+              pendingImport
+                ? () => {
+                    setSaveDialogOpen(true);
+                    setImportStatus(null);
+                  }
+                : undefined
+            }
+          />
+        </main>
+      </div>
+
+      {saveDialogOpen && pendingImport && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="save-chats-title"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-foreground/30 px-4 backdrop-blur-sm"
+        >
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void savePendingImport();
+            }}
+            className="w-full max-w-md rounded-xl border bg-background p-5 text-foreground shadow-2xl"
+          >
+            <h2 id="save-chats-title" className="text-lg font-semibold">
+              Save chats
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Keep this imported collection in the installed app so you can open it again later.
+            </p>
+            {importStatus && (
+              <div className="mt-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {importStatus}
+              </div>
+            )}
+            <label className="mt-5 block text-sm font-medium">
+              Name
+              <input
+                autoFocus
+                value={saveName}
+                onChange={(event) => setSaveName(event.target.value)}
+                maxLength={80}
+                placeholder="Leave blank for a random name"
+                className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+            </label>
+            <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border bg-muted/30 px-3 py-3 text-left text-sm">
+              <input
+                type="checkbox"
+                checked={savePermissionConfirmed}
+                onChange={(event) => setSavePermissionConfirmed(event.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+              />
+              <span>
+                <span className="font-medium">Permission confirmed</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  I own this backup or have permission from the owner to save and view it.
+                </span>
+              </span>
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSaveDialogOpen(false);
+                  setSavePermissionConfirmed(false);
+                }}
+                disabled={saving}
+                className="inline-flex h-9 items-center rounded-md border px-3 text-sm transition-colors hover:bg-accent disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!savePermissionConfirmed || saving}
+                className="inline-flex h-9 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {saving ? "Saving..." : "Save chats"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </>
   );
 }

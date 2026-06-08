@@ -1,0 +1,17 @@
+{
+  "name": "Chat Replay",
+  "short_name": "Chat Replay",
+  "description": "Browse your exported ChatGPT and Gemini conversations locally.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020817",
+  "theme_color": "#020817",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

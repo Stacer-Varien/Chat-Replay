@@ -3,7 +3,8 @@ import type { Conversation } from "@/lib/chatgpt-import";
 import { computeChain } from "@/lib/chatgpt-import";
 import { Message } from "./Message";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { Bot, Download, Menu } from "lucide-react";
+import { canUseNativePrint, printHtmlOnAndroid } from "@/lib/native-print";
+import { Bot, Download, GitBranch, Menu, Save } from "lucide-react";
 
 function fmtDate(ts: number | null) {
   if (!ts) return "";
@@ -13,9 +14,18 @@ function fmtDate(ts: number | null) {
 interface ConversationViewProps {
   conversation: Conversation | null;
   onOpenSidebar?: () => void;
+  onSelectConversation?: (id: string) => void;
+  onSave?: () => void;
+  savedName?: string;
 }
 
-export function ConversationView({ conversation, onOpenSidebar }: ConversationViewProps) {
+export function ConversationView({
+  conversation,
+  onOpenSidebar,
+  onSelectConversation,
+  onSave,
+  savedName,
+}: ConversationViewProps) {
   const [selections, setSelections] = useState<Record<string, Record<string, number>>>({});
   const [assistantOnly, setAssistantOnly] = useState(false);
   const printRef = useRef<HTMLDivElement>(null);
@@ -67,16 +77,21 @@ export function ConversationView({ conversation, onOpenSidebar }: ConversationVi
 
   function exportPdf() {
     if (!printRef.current || !conversation) return;
-    const styles = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
-      .map((n) => n.outerHTML)
+    const styles = Array.from(document.styleSheets)
+      .map((sheet) => {
+        try {
+          return Array.from(sheet.cssRules)
+            .map((rule) => rule.cssText)
+            .join("\n");
+        } catch {
+          return "";
+        }
+      })
       .join("\n");
     const escapeHtml = (s: string) =>
       s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!);
     const title = conversation.title || "Conversation";
-    const win = window.open("", "_blank", "width=900,height=1000");
-    if (!win) return;
-    win.document
-      .write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>${styles}
+    const printableHtml = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${styles}</style>
 <style>
   @page {
     margin: 20mm 16mm 22mm 16mm;
@@ -186,7 +201,18 @@ export function ConversationView({ conversation, onOpenSidebar }: ConversationVi
   <div class="meta">${chain.length} messages · ${fmtDate(conversation.createTime)}${assistantOnly ? " · Assistant only" : ""}</div>
 </div>
 ${printRef.current.innerHTML}
-</body></html>`);
+</body></html>`;
+
+    if (canUseNativePrint()) {
+      void printHtmlOnAndroid(title, printableHtml).catch((error: unknown) => {
+        alert(error instanceof Error ? error.message : "Android could not open the print dialog.");
+      });
+      return;
+    }
+
+    const win = window.open("", "_blank", "width=900,height=1000");
+    if (!win) return;
+    win.document.write(printableHtml);
     win.document.close();
     const doPrint = () => {
       win.focus();
@@ -215,11 +241,54 @@ ${printRef.current.innerHTML}
               <h1 className="truncate text-sm font-semibold sm:text-base">{conversation.title}</h1>
               <div className="mt-1 text-xs text-muted-foreground">
                 {chain.length} messages · {fmtDate(conversation.createTime)}
+                {savedName && ` · Saved as ${savedName}`}
               </div>
+              {(conversation.branchSourceId || conversation.branchChildren?.length) && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {conversation.branchSourceId && (
+                    <button
+                      type="button"
+                      onClick={() => onSelectConversation?.(conversation.branchSourceId!)}
+                      disabled={!onSelectConversation}
+                      className="inline-flex max-w-full items-center gap-1 rounded-full border bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none"
+                      title={`Open source chat: ${conversation.branchSourceTitle ?? "Original chat"}`}
+                    >
+                      <GitBranch className="h-3 w-3 shrink-0" />
+                      <span className="truncate">
+                        Branched from {conversation.branchSourceTitle ?? "original chat"}
+                      </span>
+                    </button>
+                  )}
+                  {conversation.branchChildren?.map((branch) => (
+                    <button
+                      key={branch.id}
+                      type="button"
+                      onClick={() => onSelectConversation?.(branch.id)}
+                      disabled={!onSelectConversation}
+                      className="inline-flex max-w-full items-center gap-1 rounded-full border bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none"
+                      title={`Open branched chat: ${branch.title}`}
+                    >
+                      <GitBranch className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{branch.title}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             <ThemeToggle />
+            {onSave && (
+              <button
+                type="button"
+                onClick={onSave}
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-primary/40 bg-primary/5 px-2.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+                title="Save these chats in the installed app"
+              >
+                <Save className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Save chats</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={exportPdf}
