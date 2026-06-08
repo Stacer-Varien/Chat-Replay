@@ -65,7 +65,7 @@ export function ImportDropzone({
       <div className="mx-auto flex w-full max-w-5xl items-center justify-end gap-2">
         {!installed && (
           <a
-            href="https://github.com/Stacer-Varien/Chat-Replay/releases/tag/desktop"
+            href="https://github.com/Stacer-Varien/Chat-Replay/releases"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
