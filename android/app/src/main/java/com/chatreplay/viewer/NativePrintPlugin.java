@@ -26,11 +26,16 @@ public class NativePrintPlugin extends Plugin {
     public void printHtml(PluginCall call) {
         String html = call.getString("html");
         String title = call.getString("title", "Chat Replay conversation");
+        if (title == null) {
+            title = "Chat Replay conversation";
+        }
+        
         if (html == null || html.isBlank()) {
             call.reject("No printable conversation was provided.");
             return;
         }
 
+        final String finalTitle = title;
         getActivity().runOnUiThread(() -> {
             PrintManager printManager = (PrintManager) getActivity().getSystemService(Context.PRINT_SERVICE);
             if (printManager == null) {
@@ -50,9 +55,9 @@ public class NativePrintPlugin extends Plugin {
                         printStarted = true;
                         PrintDocumentAdapter adapter = cleanupAfterPrint(
                             view,
-                            view.createPrintDocumentAdapter(title)
+                            view.createPrintDocumentAdapter(finalTitle)
                         );
-                        printManager.print(title, adapter, new PrintAttributes.Builder().build());
+                        printManager.print(finalTitle, adapter, new PrintAttributes.Builder().build());
                         call.resolve();
                     }
                 }
