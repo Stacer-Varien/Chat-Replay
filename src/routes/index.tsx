@@ -92,19 +92,6 @@ function Index() {
       const backups = await api.listBackups();
       if (cancelled) return;
       setSavedBackups(backups);
-
-      const first = backups[0];
-      if (first) {
-        const loaded = await api.loadBackup(first.id);
-        if (cancelled) return;
-        const restored = await restoreInstalledConversations(loaded);
-        if (cancelled) return;
-        if (hasRenderableAssistantMessages(restored)) {
-          setConversations(restored);
-          setActiveId(restored[0]?.id ?? null);
-          setActiveBackup(loaded.backup);
-        }
-      }
     }
 
     async function hydrate() {

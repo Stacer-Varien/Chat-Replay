@@ -61,7 +61,12 @@ export function ImportDropzone({
   }
 
   return (
-    <div className="min-h-dvh bg-background px-4 py-4 text-foreground sm:px-6 sm:py-6">
+    <div
+      className="min-h-dvh bg-background px-4 py-4 text-foreground sm:px-6 sm:py-6"
+      style={{
+        paddingTop: "calc(var(--safe-area-inset-top, env(safe-area-inset-top, 0px)) + 1rem)",
+      }}
+    >
       <div className="mx-auto flex w-full max-w-5xl items-center justify-end gap-2">
         {!installed && (
           <a

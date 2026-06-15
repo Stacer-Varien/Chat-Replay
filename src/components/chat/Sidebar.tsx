@@ -131,6 +131,9 @@ export function Sidebar({
         "flex h-full w-72 flex-col border-r bg-sidebar text-sidebar-foreground",
         className,
       )}
+      style={{
+        paddingTop: "var(--safe-area-inset-top, env(safe-area-inset-top, 0px))",
+      }}
     >
       <div className="flex items-center gap-2 px-3 py-3">
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-semibold">
@@ -312,7 +315,12 @@ export function Sidebar({
         </ul>
       </div>
 
-      <div className="border-t p-3">
+      <div
+        className="border-t p-3"
+        style={{
+          paddingBottom: "var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))",
+        }}
+      >
         <button
           onClick={onClear}
           className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-foreground transition-colors"

@@ -43,7 +43,12 @@ export function ConversationView({
   if (!conversation) {
     return (
       <div className="flex h-full flex-col">
-        <header className="flex items-center justify-between gap-2 border-b bg-background/80 px-3 py-3 backdrop-blur sm:px-4 lg:px-6">
+        <header
+          className="flex items-center justify-between gap-2 border-b bg-background/80 px-3 py-3 backdrop-blur sm:px-4 lg:px-6"
+          style={{
+            paddingTop: "var(--safe-area-inset-top, env(safe-area-inset-top, 0px))",
+          }}
+        >
           {onOpenSidebar ? (
             <button
               type="button"
@@ -224,7 +229,12 @@ ${printRef.current.innerHTML}
 
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b bg-background/80 px-3 py-3 backdrop-blur sm:px-4 lg:px-6">
+      <header
+        className="border-b bg-background/80 px-3 py-3 backdrop-blur sm:px-4 lg:px-6"
+        style={{
+          paddingTop: "var(--safe-area-inset-top, env(safe-area-inset-top, 0px))",
+        }}
+      >
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex min-w-0 items-start gap-2 sm:gap-3">
             {onOpenSidebar && (
