@@ -421,12 +421,14 @@ async function createWindow() {
     minWidth: 940,
     minHeight: 640,
     title: "Chat Replay",
+    autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.cjs"),
     },
   });
+  win.setMenu(null);
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);

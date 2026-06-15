@@ -96,16 +96,34 @@ export function Message({ item, onPrev, onNext }: Props) {
                         />
                       );
                     }
+                    if (!attachment.url) {
+                      return (
+                        <div
+                          key={attachment.id}
+                          className="flex items-start gap-2 rounded-lg border bg-muted/60 px-3 py-2 text-sm"
+                        >
+                          <FileText className="mt-0.5 h-4 w-4 shrink-0" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">{attachment.name}</span>
+                            <span className="block text-xs leading-5 text-muted-foreground">
+                              {attachment.unavailableReason ??
+                                "This file was referenced in the conversation but was not included in the export."}
+                            </span>
+                          </span>
+                          {formatBytes(attachment.size) && (
+                            <span className="shrink-0 text-xs opacity-70">
+                              {formatBytes(attachment.size)}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    }
                     return (
                       <a
                         key={attachment.id}
-                        href={attachment.url ?? undefined}
+                        href={attachment.url}
                         download={attachment.name}
-                        className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
-                          attachment.url
-                            ? "bg-background/80 hover:bg-accent"
-                            : "pointer-events-none bg-muted/60 opacity-70"
-                        }`}
+                        className="flex items-center gap-2 rounded-lg border bg-background/80 px-3 py-2 text-sm hover:bg-accent"
                       >
                         <FileText className="h-4 w-4 shrink-0" />
                         <span className="min-w-0 flex-1 truncate">{attachment.name}</span>

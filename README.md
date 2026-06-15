@@ -1,6 +1,6 @@
 # Chat Replay
 
-A local-first viewer for ChatGPT and Gemini export data. Upload your export ZIP file, browse your conversations, search messages, and review your history without sending your data anywhere else.
+A local-first viewer for ChatGPT, Claude, and Gemini export data. Upload your export ZIP file, browse your conversations, search messages, and review your history without sending your data anywhere else.
 
 ## What this app does
 
@@ -23,7 +23,7 @@ This app is designed for privacy and convenience:
 
 ## Features
 
-- Local import and parsing of ChatGPT/OpenAI export data
+- Local import and parsing of ChatGPT/OpenAI, Claude, and Gemini export data
 - Conversation list with quick navigation
 - Search and filtering for titles and messages
 - Markdown rendering for readable chat content
@@ -36,6 +36,7 @@ The app accepts:
 
 - ChatGPT export ZIP files
 - OpenAI Privacy Portal export ZIP files
+- Claude export ZIP files containing `conversations.json`
 - direct Conversations ZIP files
 - conversations JSON files
 - Gemini Apps activity from Google Takeout ZIP files

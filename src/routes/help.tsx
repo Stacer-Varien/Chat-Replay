@@ -20,7 +20,7 @@ export const Route = createFileRoute("/help")({
       {
         name: "description",
         content:
-          "Steps for downloading supported ChatGPT, OpenAI Privacy Portal, and Gemini Google Takeout exports.",
+          "Steps for downloading supported ChatGPT, Claude, OpenAI Privacy Portal, and Gemini Google Takeout exports.",
       },
     ],
   }),
@@ -43,6 +43,15 @@ const privacyPortalSteps = [
   "Select that you have a consumer ChatGPT account.",
   "Choose Download my data.",
   "Follow the verification steps and download the ZIP file when it arrives.",
+];
+
+const claudeSteps = [
+  "Open Claude on the web or in Claude Desktop. Claude does not allow export requests from its iOS or Android apps.",
+  "Click your initials in the lower-left corner and select Settings.",
+  "Open the Privacy section.",
+  "Click Export data.",
+  "Wait for the email from Claude, then open its download link while signed in.",
+  "Download the ZIP within 24 hours and import that ZIP directly into Chat Replay.",
 ];
 
 const geminiSteps = [
@@ -79,7 +88,8 @@ function Help() {
           </h1>
           <p className="mt-3 text-sm leading-6 text-muted-foreground sm:text-base">
             This app reads the ZIP file in your browser. Nothing gets uploaded to the server. You
-            can import ChatGPT/OpenAI exports or Gemini Apps activity from Google Takeout.
+            can import ChatGPT/OpenAI and Claude exports or Gemini Apps activity from Google
+            Takeout.
           </p>
         </section>
 
@@ -147,6 +157,45 @@ function Help() {
               <ExternalLink className="h-4 w-4" />
             </a>
           </div>
+        </section>
+
+        <section className="rounded-lg border bg-card p-4 text-card-foreground sm:p-5">
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <Download className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="font-semibold">From Claude</h2>
+              <p className="text-sm text-muted-foreground">
+                Export your Claude conversation history from the web app or Claude Desktop.
+              </p>
+            </div>
+          </div>
+          <ol className="grid gap-3 text-sm leading-6 md:grid-cols-2">
+            {claudeSteps.map((step) => (
+              <li key={step} className="flex gap-3">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+                  {claudeSteps.indexOf(step) + 1}
+                </span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
+          <p className="mt-4 rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-muted-foreground">
+            Claude exports can list uploaded and generated file names inside{" "}
+            <code className="font-mono text-foreground">conversations.json</code> without including
+            the original image or document files. Chat Replay shows those file references in their
+            messages, but cannot open or download a file that Claude omitted from the ZIP.
+          </p>
+          <a
+            href="https://claude.ai/settings/privacy"
+            target="_blank"
+            rel="noreferrer"
+            className="mt-5 inline-flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm transition-colors hover:bg-accent"
+          >
+            Open Claude Privacy settings
+            <ExternalLink className="h-4 w-4" />
+          </a>
         </section>
 
         <section className="rounded-lg border border-amber-500/35 bg-amber-500/10 p-4 text-sm leading-6 sm:p-5">

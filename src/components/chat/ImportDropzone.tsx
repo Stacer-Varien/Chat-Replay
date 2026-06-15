@@ -97,8 +97,8 @@ export function ImportDropzone({
             Upload your chat export
           </h1>
           <p className="mt-2 text-muted-foreground">
-            Choose a ChatGPT/OpenAI export, or a Google Takeout ZIP containing Gemini Apps activity.
-            Nothing gets uploaded to the server.
+            Choose a ChatGPT/OpenAI or Claude export, or a Google Takeout ZIP containing Gemini
+            Apps activity. Nothing gets uploaded to the server.
           </p>
 
           {installed && savedBackups.length > 0 && (
@@ -161,7 +161,7 @@ export function ImportDropzone({
                   <span className="text-muted-foreground">or drag it here</span>
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  ChatGPT/OpenAI ZIP, Gemini Google Takeout ZIP, or conversations JSON
+                  ChatGPT/OpenAI, Claude, Gemini Google Takeout, or conversations JSON
                 </div>
               </>
             )}

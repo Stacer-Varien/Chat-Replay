@@ -23,13 +23,13 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Browse supported ChatGPT, OpenAI, and Gemini exports locally in your browser. Nothing gets uploaded to the server.",
+          "Browse supported ChatGPT, OpenAI, Claude, and Gemini exports locally in your browser. Nothing gets uploaded to the server.",
       },
       { property: "og:title", content: "Chat Replay" },
       {
         property: "og:description",
         content:
-          "Browse exported ChatGPT and Gemini history locally in your browser. Nothing gets uploaded to the server.",
+          "Browse exported ChatGPT, Claude, and Gemini history locally in your browser. Nothing gets uploaded to the server.",
       },
     ],
   }),
@@ -110,6 +110,31 @@ function Index() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!installedApi || savedBackups.length === 0) return;
+
+    let wasHidden = document.visibilityState === "hidden";
+    const showHomeWhenReopened = () => {
+      if (document.visibilityState === "hidden") {
+        wasHidden = true;
+        return;
+      }
+      if (!wasHidden) return;
+
+      wasHidden = false;
+      setConversations(null);
+      setActiveId(null);
+      setActiveBackup(null);
+      setPendingImport(null);
+      setImportStatus(null);
+      setSaveDialogOpen(false);
+      setMobileSidebarOpen(false);
+    };
+
+    document.addEventListener("visibilitychange", showHomeWhenReopened);
+    return () => document.removeEventListener("visibilitychange", showHomeWhenReopened);
+  }, [installedApi, savedBackups.length]);
+
   async function refreshSavedBackups() {
     const backups = (await installedApi?.listBackups()) ?? [];
     setSavedBackups(backups);
@@ -188,12 +213,11 @@ function Index() {
     if (api && activeBackup) {
       if (!confirm(`Remove "${activeBackup.displayName}" from this installed app?`)) return;
       await api.deleteBackup(activeBackup.id);
-      const backups = await refreshSavedBackups();
+      await refreshSavedBackups();
       setConversations(null);
       setActiveId(null);
       setActiveBackup(null);
       setMobileSidebarOpen(false);
-      if (backups[0]) await loadSavedBackup(backups[0].id);
       return;
     }
 

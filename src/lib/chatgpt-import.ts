@@ -11,6 +11,7 @@ export interface MessageAttachment {
   height: number | null;
   url: string | null;
   isImage: boolean;
+  unavailableReason?: string;
 }
 
 export interface TreeMessage {
@@ -46,6 +47,7 @@ export interface Conversation {
 export type ExportSourceKind =
   | "chatgpt-export"
   | "openai-privacy-export"
+  | "claude-export"
   | "conversations-json"
   | "gemini-takeout";
 
@@ -96,6 +98,26 @@ interface RawConversation {
   update_time?: number | null;
   mapping?: Record<string, RawNode> | null;
   current_node?: string | null;
+}
+
+interface RawClaudeMessage {
+  uuid?: string;
+  text?: string | null;
+  content?: unknown[] | null;
+  sender?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  attachments?: unknown[] | null;
+  files?: unknown[] | null;
+  parent_message_uuid?: string | null;
+}
+
+interface RawClaudeConversation {
+  uuid?: string;
+  name?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  chat_messages?: unknown[] | null;
 }
 
 interface AssetHint {
@@ -662,6 +684,166 @@ export function normalizeConversations(
   return result;
 }
 
+function isoTimestamp(value: unknown): number | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null;
+}
+
+function claudeMessageText(message: RawClaudeMessage): string {
+  const contentText = Array.isArray(message.content)
+    ? message.content
+        .map((block) => {
+          if (!block || typeof block !== "object") return "";
+          const item = block as Record<string, unknown>;
+          return item.type === "text" && typeof item.text === "string" ? item.text.trim() : "";
+        })
+        .filter(Boolean)
+        .join("\n\n")
+    : "";
+
+  return contentText || stringValue(message.text) || "";
+}
+
+function claudeMessageAttachments(message: RawClaudeMessage): MessageAttachment[] {
+  const attachments = new Map<string, MessageAttachment>();
+  const items = [
+    ...(Array.isArray(message.files) ? message.files : []),
+    ...(Array.isArray(message.attachments) ? message.attachments : []),
+  ];
+
+  for (const value of items) {
+    if (!value || typeof value !== "object") continue;
+    const item = value as Record<string, unknown>;
+    const id = stringValue(item.file_uuid ?? item.uuid ?? item.id);
+    const name = stringValue(item.file_name ?? item.name ?? item.filename);
+    if (!id && !name) continue;
+    const key = id ?? name!;
+    const mimeType = stringValue(item.mime_type ?? item.mimeType) ?? mimeFromName(name);
+    attachments.set(key, {
+      id: key,
+      name: name ?? id!,
+      mimeType,
+      size: numberValue(item.file_size ?? item.size ?? item.size_bytes),
+      width: numberValue(item.width),
+      height: numberValue(item.height),
+      url: null,
+      isImage: isImageAsset(mimeType, name),
+      unavailableReason: "Claude included this file reference, but not the original file.",
+    });
+  }
+
+  return [...attachments.values()];
+}
+
+function isClaudeConversationArray(raw: unknown): raw is RawClaudeConversation[] {
+  return (
+    Array.isArray(raw) &&
+    raw.some(
+      (item) =>
+        Boolean(item) &&
+        typeof item === "object" &&
+        Array.isArray((item as RawClaudeConversation).chat_messages),
+    )
+  );
+}
+
+export function normalizeClaudeConversations(raw: unknown): Conversation[] {
+  if (!isClaudeConversationArray(raw)) {
+    throw new Error("Unexpected format: Claude conversations.json should be a JSON array");
+  }
+
+  const conversations: Conversation[] = [];
+  for (const rawConversation of raw) {
+    const messages = Array.isArray(rawConversation.chat_messages)
+      ? rawConversation.chat_messages.filter(
+          (item): item is RawClaudeMessage => Boolean(item) && typeof item === "object",
+        )
+      : [];
+    const rawById = new Map<string, RawClaudeMessage>();
+    const rawChildren = new Map<string, string[]>();
+
+    for (const message of messages) {
+      const id = stringValue(message.uuid);
+      if (!id) continue;
+      rawById.set(id, message);
+      const parentId = stringValue(message.parent_message_uuid);
+      if (parentId) {
+        rawChildren.set(parentId, [...(rawChildren.get(parentId) ?? []), id]);
+      }
+    }
+
+    const nodes: Record<string, TreeMessage> = {};
+    for (const [id, message] of rawById) {
+      const role =
+        message.sender === "human" ? "user" : message.sender === "assistant" ? "assistant" : null;
+      if (!role) continue;
+      const text = claudeMessageText(message);
+      const attachments = claudeMessageAttachments(message);
+      if (!text && !attachments.length) continue;
+      nodes[id] = {
+        id,
+        role,
+        text,
+        createTime: isoTimestamp(message.created_at),
+        childrenIds: [],
+        attachments,
+      };
+    }
+
+    function visibleChildren(id: string): string[] {
+      const visible: string[] = [];
+      const pending = [...(rawChildren.get(id) ?? [])];
+      const seen = new Set<string>();
+      while (pending.length) {
+        const childId = pending.shift()!;
+        if (seen.has(childId)) continue;
+        seen.add(childId);
+        if (nodes[childId]) visible.push(childId);
+        else pending.unshift(...(rawChildren.get(childId) ?? []));
+      }
+      return visible;
+    }
+
+    function nearestVisibleParent(id: string): string | null {
+      let parentId = stringValue(rawById.get(id)?.parent_message_uuid);
+      const seen = new Set<string>();
+      while (parentId && !seen.has(parentId)) {
+        seen.add(parentId);
+        if (nodes[parentId]) return parentId;
+        parentId = stringValue(rawById.get(parentId)?.parent_message_uuid);
+      }
+      return null;
+    }
+
+    for (const id of Object.keys(nodes)) {
+      nodes[id].childrenIds = visibleChildren(id);
+    }
+    const rootIds = Object.keys(nodes).filter((id) => nearestVisibleParent(id) === null);
+    if (!rootIds.length) continue;
+
+    const defaultSelection: Record<string, number> = {
+      __root__: rootIds.length - 1,
+    };
+    for (const node of Object.values(nodes)) {
+      if (node.childrenIds.length > 1) defaultSelection[node.id] = node.childrenIds.length - 1;
+    }
+
+    conversations.push({
+      id: stringValue(rawConversation.uuid) ?? randomId(),
+      title: stringValue(rawConversation.name) ?? "Untitled Claude conversation",
+      createTime: isoTimestamp(rawConversation.created_at),
+      updateTime: isoTimestamp(rawConversation.updated_at),
+      rootIds,
+      nodes,
+      defaultSelection,
+    });
+  }
+
+  conversations.sort((a, b) => (b.updateTime ?? 0) - (a.updateTime ?? 0));
+  return conversations;
+}
+
 function zipEntries(zip: JSZip): JSZip.JSZipObject[] {
   return Object.values(zip.files).filter((entry) => !entry.dir);
 }
@@ -920,6 +1102,25 @@ async function parseConversationZip(
   const raw = await readRawConversationsFromZip(zip);
   const ownSource = await buildAssetSource(zip);
   return conversationsFromRaw(raw, [ownSource, ...additionalSources]);
+}
+
+async function parseClaudeConversationZip(zip: JSZip): Promise<Conversation[] | null> {
+  const entries = await conversationJsonEntries(zip);
+  if (!entries.length) return null;
+
+  const raw: unknown[] = [];
+  for (const entry of entries) {
+    const data = await parseJsonEntry(entry, basename(entry.name));
+    if (Array.isArray(data)) raw.push(...data);
+    else if (
+      data &&
+      typeof data === "object" &&
+      Array.isArray((data as { conversations?: unknown }).conversations)
+    ) {
+      raw.push(...(data as { conversations: unknown[] }).conversations);
+    }
+  }
+  return isClaudeConversationArray(raw) ? normalizeClaudeConversations(raw) : null;
 }
 
 async function loadNestedZip(entry: JSZip.JSZipObject): Promise<JSZip> {
@@ -1422,10 +1623,11 @@ async function buildBackupMetadata(
   sourceKind: ExportSourceKind,
   zip: JSZip | null,
 ): Promise<ExportBackupMetadata> {
+  const mayUseUserFile = sourceKind !== "claude-export";
   const identity =
-    (zip ? await userIdentityFromZip(zip) : null) ??
+    (zip && mayUseUserFile ? await userIdentityFromZip(zip) : null) ??
     filenameIdentity(file.name) ??
-    (zip ? await nestedConversationIdentity(zip) : null) ??
+    (zip && mayUseUserFile ? await nestedConversationIdentity(zip) : null) ??
     ({ kind: "file", source: `file:${file.name}:${file.size}` } as const);
 
   return {
@@ -1447,11 +1649,15 @@ async function parseZipFileWithMetadata(file: File): Promise<ParsedChatGPTExport
   const hasUserOnlineActivity = zipEntries(zip).some((entry) =>
     isUserOnlineActivityPath(entry.name),
   );
+  const claudeConversations =
+    !geminiActivityEntry && !hasUserOnlineActivity ? await parseClaudeConversationZip(zip) : null;
   const conversations = geminiActivityEntry
     ? await parseGeminiTakeout(zip, geminiActivityEntry)
     : hasUserOnlineActivity
       ? await parseOpenAIPrivacyExport(zip)
-      : await parseConversationZip(zip);
+      : claudeConversations
+        ? claudeConversations
+        : await parseConversationZip(zip);
   return {
     conversations,
     metadata: await buildBackupMetadata(
@@ -1461,7 +1667,9 @@ async function parseZipFileWithMetadata(file: File): Promise<ParsedChatGPTExport
         ? "gemini-takeout"
         : hasUserOnlineActivity
           ? "openai-privacy-export"
-          : "chatgpt-export",
+          : claudeConversations
+            ? "claude-export"
+            : "chatgpt-export",
       zip,
     ),
   };
@@ -1481,13 +1689,19 @@ async function parseJsonFileWithMetadata(file: File): Promise<ParsedChatGPTExpor
     );
   }
 
-  const convos = normalizeConversations(data);
+  const isClaude = isClaudeConversationArray(data);
+  const convos = isClaude ? normalizeClaudeConversations(data) : normalizeConversations(data);
   if (!convos.length) {
     throw new Error("No readable conversations found in this export");
   }
   return {
     conversations: convos,
-    metadata: await buildBackupMetadata(file, convos, "conversations-json", null),
+    metadata: await buildBackupMetadata(
+      file,
+      convos,
+      isClaude ? "claude-export" : "conversations-json",
+      null,
+    ),
   };
 }
 

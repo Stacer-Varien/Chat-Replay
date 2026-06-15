@@ -86,13 +86,15 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "application-name", content: "Chat Replay" },
       {
         name: "description",
-        content: "Browse supported ChatGPT, OpenAI, and Gemini exports locally in your browser.",
+        content:
+          "Browse supported ChatGPT, OpenAI, Claude, and Gemini exports locally in your browser.",
       },
       { name: "author", content: "Stacer Varien" },
       { property: "og:title", content: "Chat Replay" },
       {
         property: "og:description",
-        content: "Browse supported ChatGPT, OpenAI, and Gemini exports locally in your browser.",
+        content:
+          "Browse supported ChatGPT, OpenAI, Claude, and Gemini exports locally in your browser.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
