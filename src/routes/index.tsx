@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ImportDropzone } from "@/components/chat/ImportDropzone";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { ConversationView } from "@/components/chat/ConversationView";
@@ -81,6 +81,16 @@ function Index() {
   const [savePermissionConfirmed, setSavePermissionConfirmed] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  const showInstalledHome = useCallback(() => {
+    setConversations(null);
+    setActiveId(null);
+    setActiveBackup(null);
+    setPendingImport(null);
+    setImportStatus(null);
+    setSaveDialogOpen(false);
+    setMobileSidebarOpen(false);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -122,18 +132,20 @@ function Index() {
       if (!wasHidden) return;
 
       wasHidden = false;
-      setConversations(null);
-      setActiveId(null);
-      setActiveBackup(null);
-      setPendingImport(null);
-      setImportStatus(null);
-      setSaveDialogOpen(false);
-      setMobileSidebarOpen(false);
+      showInstalledHome();
     };
 
     document.addEventListener("visibilitychange", showHomeWhenReopened);
     return () => document.removeEventListener("visibilitychange", showHomeWhenReopened);
-  }, [installedApi, savedBackups.length]);
+  }, [installedApi, savedBackups.length, showInstalledHome]);
+
+  useEffect(() => {
+    if (installedApi?.platform !== "android" || savedBackups.length === 0) return;
+
+    const showHomeOnAndroidResume = () => showInstalledHome();
+    document.addEventListener("resume", showHomeOnAndroidResume);
+    return () => document.removeEventListener("resume", showHomeOnAndroidResume);
+  }, [installedApi, savedBackups.length, showInstalledHome]);
 
   async function refreshSavedBackups() {
     const backups = (await installedApi?.listBackups()) ?? [];

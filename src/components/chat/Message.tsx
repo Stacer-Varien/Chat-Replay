@@ -26,9 +26,9 @@ export function Message({ item, onPrev, onNext }: Props) {
   const attachments = node.attachments ?? [];
 
   return (
-    <div className="w-full">
-      <div className="mx-auto max-w-3xl px-3 py-4 sm:px-4">
-        <div className={`flex gap-2 sm:gap-4 ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className="w-full min-w-0 overflow-hidden">
+      <div className="mx-auto w-full max-w-3xl min-w-0 px-3 py-4 sm:px-4">
+        <div className={`flex min-w-0 gap-2 sm:gap-4 ${isUser ? "justify-end" : "justify-start"}`}>
           {!isUser && (
             <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground sm:h-8 sm:w-8">
               <Sparkles className="h-4 w-4" />
@@ -37,20 +37,20 @@ export function Message({ item, onPrev, onNext }: Props) {
           <div
             className={
               isUser
-                ? "flex max-w-[calc(100%-2.25rem)] flex-col items-end gap-1 sm:max-w-[80%]"
-                : "flex max-w-[calc(100%-2.25rem)] flex-col items-start gap-1 sm:max-w-[85%]"
+                ? "flex min-w-0 max-w-[calc(100%-2.25rem)] flex-col items-end gap-1 sm:max-w-[80%]"
+                : "flex min-w-0 max-w-[calc(100%-2.25rem)] flex-col items-start gap-1 sm:max-w-[85%]"
             }
           >
             <div
               className={
                 isUser
-                  ? "rounded-2xl bg-user-bubble px-4 py-2.5 text-user-bubble-foreground"
-                  : "text-foreground"
+                  ? "max-w-full overflow-hidden rounded-2xl bg-user-bubble px-4 py-2.5 text-user-bubble-foreground"
+                  : "max-w-full overflow-hidden text-foreground"
               }
             >
               {isUser ? (
                 node.text ? (
-                  <div className="whitespace-pre-wrap break-words text-[15px] leading-relaxed">
+                  <div className="whitespace-pre-wrap break-words text-[15px] leading-relaxed [overflow-wrap:anywhere]">
                     {node.text}
                   </div>
                 ) : null
