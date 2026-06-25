@@ -10,7 +10,14 @@ const IPC = {
   listBackups: "chat-replay:list-backups",
   loadBackup: "chat-replay:load-backup",
   saveBackup: "chat-replay:save-backup",
+  renameBackup: "chat-replay:rename-backup",
+  markBackupOpened: "chat-replay:mark-backup-opened",
   deleteBackup: "chat-replay:delete-backup",
+  getLockState: "chat-replay:get-lock-state",
+  setupLock: "chat-replay:setup-lock",
+  verifyLock: "chat-replay:verify-lock",
+  disableLock: "chat-replay:disable-lock",
+  resetLockAndBackups: "chat-replay:reset-lock-and-backups",
 };
 
 let appServer;
@@ -167,6 +174,10 @@ function backupRoot() {
   return path.join(app.getPath("userData"), "backups");
 }
 
+function lockFilePath() {
+  return path.join(app.getPath("userData"), "lock.json");
+}
+
 function normalizeBackupId(id) {
   return typeof id === "string" && /^[a-f0-9]{16,96}$/i.test(id) ? id.toLowerCase() : null;
 }
@@ -225,6 +236,10 @@ function randomDisplayName() {
   return `Saved Chats ${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 }
 
+function nowSeconds() {
+  return Math.floor(Date.now() / 1000);
+}
+
 function scrubConversationData(value) {
   if (Array.isArray(value)) return value.map(scrubConversationData);
   if (!value || typeof value !== "object") return value;
@@ -245,8 +260,10 @@ function summaryFromManifest(manifest) {
       "Saved Chats",
     originalFileName: manifest.originalFileName,
     archiveFileName: manifest.archiveFileName,
+    sourceKind: manifest.sourceKind ?? manifest.metadata?.sourceKind ?? null,
     importedAt: manifest.importedAt,
     updatedAt: manifest.updatedAt,
+    lastOpenedAt: finiteNumber(manifest.lastOpenedAt),
     exportedAt: manifest.exportedAt,
     version: manifest.version,
     conversationCount: manifest.conversationCount,
@@ -287,7 +304,9 @@ async function listBackups() {
   }
 
   return backups.sort(
-    (a, b) => (b.version ?? b.importedAt ?? 0) - (a.version ?? a.importedAt ?? 0),
+    (a, b) =>
+      (b.lastOpenedAt ?? b.version ?? b.importedAt ?? 0) -
+      (a.lastOpenedAt ?? a.version ?? a.importedAt ?? 0),
   );
 }
 
@@ -325,7 +344,7 @@ async function saveBackup(_event, payload) {
   const id = normalizeBackupId(metadata.identityKey) || sha256Hex(archiveData);
   const normalizedId = assertBackupId(id);
   const version = backupVersion(metadata);
-  const importedAt = Math.floor(Date.now() / 1000);
+  const importedAt = nowSeconds();
   const existing = await readManifest(normalizedId);
   const requestedName = requestedDisplayName(payload.displayName);
 
@@ -363,8 +382,10 @@ async function saveBackup(_event, payload) {
     originalFileName:
       typeof payload.fileName === "string" ? payload.fileName : (metadata.sourceName ?? "backup"),
     archiveFileName,
+    sourceKind: metadata.sourceKind ?? null,
     importedAt: existing?.importedAt ?? importedAt,
     updatedAt: importedAt,
+    lastOpenedAt: finiteNumber(existing?.lastOpenedAt),
     exportedAt: finiteNumber(metadata.exportedAt),
     latestConversationUpdate: finiteNumber(metadata.latestConversationUpdate),
     version,
@@ -400,8 +421,94 @@ async function saveBackup(_event, payload) {
   };
 }
 
+async function renameBackup(_event, id, displayName) {
+  const normalized = assertBackupId(id);
+  const manifest = await readManifest(normalized);
+  if (!manifest) throw new Error("This saved backup could not be found.");
+  const requestedName = requestedDisplayName(displayName);
+  if (!requestedName) throw new Error("Enter a name for this saved collection.");
+  manifest.displayName = requestedName;
+  manifest.updatedAt = nowSeconds();
+  await writeJson(path.join(backupDir(normalized), "manifest.json"), manifest);
+  return summaryFromManifest(manifest);
+}
+
+async function markBackupOpened(_event, id) {
+  const normalized = assertBackupId(id);
+  const manifest = await readManifest(normalized);
+  if (!manifest) throw new Error("This saved backup could not be found.");
+  manifest.lastOpenedAt = nowSeconds();
+  await writeJson(path.join(backupDir(normalized), "manifest.json"), manifest);
+  return summaryFromManifest(manifest);
+}
+
 async function deleteBackup(_event, id) {
   await fs.rm(backupDir(id), { recursive: true, force: true });
+  return { ok: true };
+}
+
+async function readLock() {
+  try {
+    const lock = await readJson(lockFilePath());
+    if (typeof lock?.salt !== "string" || typeof lock?.passcodeHash !== "string") return null;
+    return lock;
+  } catch {
+    return null;
+  }
+}
+
+async function writeLock(lock) {
+  if (!lock) {
+    await fs.rm(lockFilePath(), { force: true });
+    return;
+  }
+  await fs.mkdir(app.getPath("userData"), { recursive: true });
+  await writeJson(lockFilePath(), lock);
+}
+
+function hashPasscode(passcode, salt) {
+  return crypto.createHash("sha256").update(`${salt}:${passcode}`).digest("hex");
+}
+
+async function getLockState() {
+  const lock = await readLock();
+  return {
+    configured: Boolean(lock),
+    biometricAvailable: false,
+    biometricEnabled: false,
+  };
+}
+
+async function setupLock(_event, passcode) {
+  if (typeof passcode !== "string" || passcode.trim().length < 4) {
+    throw new Error("Use at least 4 characters for the passcode.");
+  }
+  const salt = crypto.randomBytes(16).toString("hex");
+  await writeLock({
+    salt,
+    passcodeHash: hashPasscode(passcode, salt),
+    biometricEnabled: false,
+  });
+  return getLockState();
+}
+
+async function verifyLock(_event, passcode) {
+  const lock = await readLock();
+  if (!lock) return { ok: true };
+  if (hashPasscode(String(passcode ?? ""), lock.salt) !== lock.passcodeHash) {
+    throw new Error("That passcode did not unlock Chat Replay.");
+  }
+  return { ok: true };
+}
+
+async function disableLock(_event, passcode) {
+  await verifyLock(_event, passcode);
+  await writeLock(null);
+  return getLockState();
+}
+
+async function resetLockAndBackups() {
+  await Promise.all([fs.rm(backupRoot(), { recursive: true, force: true }), writeLock(null)]);
   return { ok: true };
 }
 
@@ -409,7 +516,14 @@ function registerIpc() {
   ipcMain.handle(IPC.listBackups, listBackups);
   ipcMain.handle(IPC.loadBackup, loadBackup);
   ipcMain.handle(IPC.saveBackup, saveBackup);
+  ipcMain.handle(IPC.renameBackup, renameBackup);
+  ipcMain.handle(IPC.markBackupOpened, markBackupOpened);
   ipcMain.handle(IPC.deleteBackup, deleteBackup);
+  ipcMain.handle(IPC.getLockState, getLockState);
+  ipcMain.handle(IPC.setupLock, setupLock);
+  ipcMain.handle(IPC.verifyLock, verifyLock);
+  ipcMain.handle(IPC.disableLock, disableLock);
+  ipcMain.handle(IPC.resetLockAndBackups, resetLockAndBackups);
 }
 
 async function createWindow() {

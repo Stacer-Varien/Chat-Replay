@@ -1,6 +1,6 @@
 {
   "name": "chat-replay",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Local ChatGPT, Claude, and Gemini export viewer with browser, Vercel, Electron, and Android builds.",
   "productName": "Chat Replay",
   "author": "Stacer Varien",

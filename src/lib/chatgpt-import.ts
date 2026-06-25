@@ -63,9 +63,37 @@ export interface ExportBackupMetadata {
   conversationCount: number;
 }
 
+export interface ImportHealthWarning {
+  code: string;
+  message: string;
+  count?: number;
+}
+
+export interface ImportHealthReport {
+  sourceName: string;
+  sourceKind: ExportSourceKind;
+  sourceLabel: string;
+  sourceSize: number;
+  exportedAt: number | null;
+  latestConversationUpdate: number | null;
+  conversationCount: number;
+  messageCount: number;
+  assistantMessageCount: number;
+  userMessageCount: number;
+  attachmentCount: number;
+  availableAttachmentCount: number;
+  missingAttachmentCount: number;
+  imageAttachmentCount: number;
+  branchConversationCount: number;
+  branchChoiceCount: number;
+  alternateMessageCount: number;
+  warnings: ImportHealthWarning[];
+}
+
 export interface ParsedChatGPTExport {
   conversations: Conversation[];
   metadata: ExportBackupMetadata;
+  report: ImportHealthReport;
 }
 
 interface RawNode {
@@ -1643,6 +1671,114 @@ async function buildBackupMetadata(
   };
 }
 
+function sourceLabel(kind: ExportSourceKind): string {
+  switch (kind) {
+    case "chatgpt-export":
+      return "ChatGPT";
+    case "openai-privacy-export":
+      return "OpenAI";
+    case "claude-export":
+      return "Claude";
+    case "gemini-takeout":
+      return "Gemini";
+    case "conversations-json":
+      return "JSON";
+  }
+}
+
+function buildImportHealthReport(
+  conversations: Conversation[],
+  metadata: ExportBackupMetadata,
+): ImportHealthReport {
+  let messageCount = 0;
+  let assistantMessageCount = 0;
+  let userMessageCount = 0;
+  let attachmentCount = 0;
+  let availableAttachmentCount = 0;
+  let missingAttachmentCount = 0;
+  let imageAttachmentCount = 0;
+  let branchConversationCount = 0;
+  let branchChoiceCount = 0;
+  let alternateMessageCount = 0;
+
+  for (const conversation of conversations) {
+    if (conversation.branchSourceId || conversation.branchChildren?.length) {
+      branchConversationCount += 1;
+    }
+    if (conversation.rootIds.length > 1) {
+      branchChoiceCount += 1;
+      alternateMessageCount += conversation.rootIds.length - 1;
+    }
+    for (const node of Object.values(conversation.nodes)) {
+      messageCount += 1;
+      if (node.role === "assistant") assistantMessageCount += 1;
+      if (node.role === "user") userMessageCount += 1;
+      if (node.childrenIds.length > 1) {
+        branchChoiceCount += 1;
+        alternateMessageCount += node.childrenIds.length - 1;
+      }
+      for (const attachment of node.attachments ?? []) {
+        attachmentCount += 1;
+        if (attachment.url) availableAttachmentCount += 1;
+        else missingAttachmentCount += 1;
+        if (attachment.isImage) imageAttachmentCount += 1;
+      }
+    }
+  }
+
+  const warnings: ImportHealthWarning[] = [];
+  if (missingAttachmentCount > 0) {
+    warnings.push({
+      code: "missing-attachments",
+      count: missingAttachmentCount,
+      message:
+        "Some referenced files were not included in the export, so Chat Replay can list them but cannot open them.",
+    });
+  }
+  if (metadata.sourceKind === "gemini-takeout") {
+    warnings.push({
+      code: "gemini-activity-grouping",
+      message:
+        "Gemini Takeout stores activity differently, so some prompt and response pairs may appear as separate chats.",
+    });
+  }
+
+  return {
+    sourceName: metadata.sourceName,
+    sourceKind: metadata.sourceKind,
+    sourceLabel: sourceLabel(metadata.sourceKind),
+    sourceSize: metadata.sourceSize,
+    exportedAt: metadata.exportedAt,
+    latestConversationUpdate: metadata.latestConversationUpdate,
+    conversationCount: conversations.length,
+    messageCount,
+    assistantMessageCount,
+    userMessageCount,
+    attachmentCount,
+    availableAttachmentCount,
+    missingAttachmentCount,
+    imageAttachmentCount,
+    branchConversationCount,
+    branchChoiceCount,
+    alternateMessageCount,
+    warnings,
+  };
+}
+
+async function parsedExportResult(
+  file: File,
+  conversations: Conversation[],
+  sourceKind: ExportSourceKind,
+  zip: JSZip | null,
+): Promise<ParsedChatGPTExport> {
+  const metadata = await buildBackupMetadata(file, conversations, sourceKind, zip);
+  return {
+    conversations,
+    metadata,
+    report: buildImportHealthReport(conversations, metadata),
+  };
+}
+
 async function parseZipFileWithMetadata(file: File): Promise<ParsedChatGPTExport> {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const geminiActivityEntry = zipEntries(zip).find((entry) => isGeminiActivityPath(entry.name));
@@ -1658,21 +1794,18 @@ async function parseZipFileWithMetadata(file: File): Promise<ParsedChatGPTExport
       : claudeConversations
         ? claudeConversations
         : await parseConversationZip(zip);
-  return {
+  return parsedExportResult(
+    file,
     conversations,
-    metadata: await buildBackupMetadata(
-      file,
-      conversations,
-      geminiActivityEntry
-        ? "gemini-takeout"
-        : hasUserOnlineActivity
-          ? "openai-privacy-export"
-          : claudeConversations
-            ? "claude-export"
-            : "chatgpt-export",
-      zip,
-    ),
-  };
+    geminiActivityEntry
+      ? "gemini-takeout"
+      : hasUserOnlineActivity
+        ? "openai-privacy-export"
+        : claudeConversations
+          ? "claude-export"
+          : "chatgpt-export",
+    zip,
+  );
 }
 
 async function parseZipFile(file: File): Promise<Conversation[]> {
@@ -1694,15 +1827,7 @@ async function parseJsonFileWithMetadata(file: File): Promise<ParsedChatGPTExpor
   if (!convos.length) {
     throw new Error("No readable conversations found in this export");
   }
-  return {
-    conversations: convos,
-    metadata: await buildBackupMetadata(
-      file,
-      convos,
-      isClaude ? "claude-export" : "conversations-json",
-      null,
-    ),
-  };
+  return parsedExportResult(file, convos, isClaude ? "claude-export" : "conversations-json", null);
 }
 
 async function parseJsonFile(file: File): Promise<Conversation[]> {

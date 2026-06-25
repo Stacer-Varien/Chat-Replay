@@ -1,12 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { ImportDropzone } from "@/components/chat/ImportDropzone";
+import { LockGate } from "@/components/chat/LockGate";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { ConversationView } from "@/components/chat/ConversationView";
 import {
   computeChain,
   parseChatGPTExportWithMetadata,
   type Conversation,
+  type ImportHealthReport,
   type ParsedChatGPTExport,
 } from "@/lib/chatgpt-import";
 import { getInstalledBackupApi } from "@/lib/installed-backups";
@@ -14,6 +16,7 @@ import type {
   InstalledBackupApi,
   InstalledBackupPayload,
   InstalledBackupSummary,
+  InstalledLockState,
 } from "@/types/installed-app";
 
 export const Route = createFileRoute("/")({
@@ -53,16 +56,16 @@ function hasRenderableAssistantMessages(conversations: Conversation[]) {
 
 async function restoreInstalledConversations(
   loaded: InstalledBackupPayload,
-): Promise<Conversation[]> {
-  if (!loaded.archiveData) return loaded.conversations;
+): Promise<{ conversations: Conversation[]; report: ImportHealthReport | null }> {
+  if (!loaded.archiveData) return { conversations: loaded.conversations, report: null };
   try {
     const source = new File([loaded.archiveData], loaded.backup.originalFileName);
     const parsed = await parseChatGPTExportWithMetadata(source);
     return hasRenderableAssistantMessages(parsed.conversations)
-      ? parsed.conversations
-      : loaded.conversations;
+      ? { conversations: parsed.conversations, report: parsed.report }
+      : { conversations: loaded.conversations, report: null };
   } catch {
-    return loaded.conversations;
+    return { conversations: loaded.conversations, report: null };
   }
 }
 
@@ -75,19 +78,26 @@ function Index() {
   const [savedBackups, setSavedBackups] = useState<InstalledBackupSummary[]>([]);
   const [activeBackup, setActiveBackup] = useState<InstalledBackupSummary | null>(null);
   const [pendingImport, setPendingImport] = useState<ImportedFile | null>(null);
+  const [activeReport, setActiveReport] = useState<ImportHealthReport | null>(null);
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [savePermissionConfirmed, setSavePermissionConfirmed] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [selections, setSelections] = useState<Record<string, Record<string, number>>>({});
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
+  const [lockState, setLockState] = useState<InstalledLockState | null>(null);
+  const [appUnlocked, setAppUnlocked] = useState(true);
 
   const showInstalledHome = useCallback(() => {
     setConversations(null);
     setActiveId(null);
     setActiveBackup(null);
     setPendingImport(null);
+    setActiveReport(null);
     setImportStatus(null);
     setSaveDialogOpen(false);
+    setFocusNodeId(null);
     setMobileSidebarOpen(false);
   }, []);
 
@@ -99,9 +109,11 @@ function Index() {
       if (!api) return;
       setInstalledApi(api);
 
-      const backups = await api.listBackups();
+      const [backups, lock] = await Promise.all([api.listBackups(), api.getLockState()]);
       if (cancelled) return;
       setSavedBackups(backups);
+      setLockState(lock);
+      setAppUnlocked(!lock.configured);
     }
 
     async function hydrate() {
@@ -132,25 +144,35 @@ function Index() {
       if (!wasHidden) return;
 
       wasHidden = false;
+      if (lockState?.configured) setAppUnlocked(false);
       showInstalledHome();
     };
 
     document.addEventListener("visibilitychange", showHomeWhenReopened);
     return () => document.removeEventListener("visibilitychange", showHomeWhenReopened);
-  }, [installedApi, savedBackups.length, showInstalledHome]);
+  }, [installedApi, savedBackups.length, showInstalledHome, lockState?.configured]);
 
   useEffect(() => {
     if (installedApi?.platform !== "android" || savedBackups.length === 0) return;
 
-    const showHomeOnAndroidResume = () => showInstalledHome();
+    const showHomeOnAndroidResume = () => {
+      if (lockState?.configured) setAppUnlocked(false);
+      showInstalledHome();
+    };
     document.addEventListener("resume", showHomeOnAndroidResume);
     return () => document.removeEventListener("resume", showHomeOnAndroidResume);
-  }, [installedApi, savedBackups.length, showInstalledHome]);
+  }, [installedApi, savedBackups.length, showInstalledHome, lockState?.configured]);
 
   async function refreshSavedBackups() {
     const backups = (await installedApi?.listBackups()) ?? [];
     setSavedBackups(backups);
     return backups;
+  }
+
+  async function refreshLockState(api = installedApi) {
+    const lock = await api?.getLockState();
+    if (lock) setLockState(lock);
+    return lock;
   }
 
   async function loadSavedBackup(id: string) {
@@ -161,13 +183,17 @@ function Index() {
     try {
       const loaded = await api.loadBackup(id);
       const restored = await restoreInstalledConversations(loaded);
-      if (!hasRenderableAssistantMessages(restored)) {
+      if (!hasRenderableAssistantMessages(restored.conversations)) {
         throw new Error("This saved backup has no readable assistant messages.");
       }
-      setConversations(restored);
-      setActiveId(restored[0]?.id ?? null);
-      setActiveBackup(loaded.backup);
+      const openedBackup = await api.markBackupOpened(id);
+      await refreshSavedBackups();
+      setConversations(restored.conversations);
+      setActiveId(restored.conversations[0]?.id ?? null);
+      setActiveBackup(openedBackup);
+      setActiveReport(restored.report);
       setPendingImport(null);
+      setFocusNodeId(null);
       setMobileSidebarOpen(false);
     } catch (e) {
       setImportStatus(e instanceof Error ? e.message : "Failed to open saved backup.");
@@ -179,10 +205,54 @@ function Index() {
     setConversations(imported.conversations);
     setActiveId(imported.conversations[0]?.id ?? null);
     setActiveBackup(null);
+    setActiveReport(imported.report);
     setPendingImport(installedApi ? imported : null);
+    setFocusNodeId(null);
     if (installedApi) {
       setImportStatus("Imported temporarily. Choose Save chats to keep this collection.");
     }
+  }
+
+  async function renameSavedBackup(id: string, displayName: string) {
+    const renamed = await installedApi?.renameBackup(id, displayName);
+    await refreshSavedBackups();
+    if (renamed && activeBackup?.id === id) setActiveBackup(renamed);
+  }
+
+  async function deleteSavedBackup(id: string) {
+    await installedApi?.deleteBackup(id);
+    await refreshSavedBackups();
+    if (activeBackup?.id === id) showInstalledHome();
+  }
+
+  async function unlockApp(passcode: string) {
+    await installedApi?.verifyLock(passcode);
+    setAppUnlocked(true);
+  }
+
+  async function unlockWithBiometric() {
+    await installedApi?.unlockWithBiometric?.();
+    setAppUnlocked(true);
+  }
+
+  async function setupLock(passcode: string, biometricEnabled: boolean) {
+    const lock = await installedApi?.setupLock(passcode, { biometricEnabled });
+    if (lock) setLockState(lock);
+    setAppUnlocked(true);
+  }
+
+  async function disableLock(passcode: string) {
+    const lock = await installedApi?.disableLock(passcode);
+    if (lock) setLockState(lock);
+    setAppUnlocked(true);
+  }
+
+  async function resetLockAndBackups() {
+    await installedApi?.resetLockAndBackups();
+    setSavedBackups([]);
+    setLockState((await refreshLockState()) ?? null);
+    setAppUnlocked(true);
+    showInstalledHome();
   }
 
   async function savePendingImport() {
@@ -238,6 +308,7 @@ function Index() {
     setActiveId(null);
     setActiveBackup(null);
     setPendingImport(null);
+    setActiveReport(null);
     setMobileSidebarOpen(false);
   }
 
@@ -245,16 +316,38 @@ function Index() {
     setConversations(null);
     setActiveBackup(null);
     setPendingImport(null);
+    setActiveReport(null);
     setImportStatus(null);
+    setFocusNodeId(null);
     setMobileSidebarOpen(false);
   }
 
-  function handleSelect(id: string) {
+  function handleSelect(id: string, selection?: Record<string, number>, nodeId?: string | null) {
     setActiveId(id);
+    if (selection) {
+      setSelections((prev) => ({ ...prev, [id]: selection }));
+    }
+    setFocusNodeId(nodeId ?? null);
     setMobileSidebarOpen(false);
   }
 
   if (!hydrated) return null;
+
+  if (installedApi && lockState?.configured && !appUnlocked) {
+    return (
+      <LockGate
+        platform={installedApi.platform}
+        lockState={lockState}
+        onUnlock={unlockApp}
+        onBiometricUnlock={
+          lockState.biometricEnabled && installedApi.unlockWithBiometric
+            ? unlockWithBiometric
+            : undefined
+        }
+        onReset={resetLockAndBackups}
+      />
+    );
+  }
 
   if (!conversations) {
     return (
@@ -263,7 +356,14 @@ function Index() {
         installed={Boolean(installedApi)}
         savedBackups={savedBackups}
         onLoadBackup={loadSavedBackup}
+        onRenameBackup={renameSavedBackup}
+        onDeleteBackup={deleteSavedBackup}
         importStatus={importStatus}
+        platform={installedApi?.platform ?? null}
+        lockState={lockState}
+        onSetupLock={setupLock}
+        onDisableLock={disableLock}
+        onResetLockAndBackups={resetLockAndBackups}
       />
     );
   }
@@ -286,6 +386,7 @@ function Index() {
         <Sidebar
           conversations={conversations}
           activeId={activeId}
+          selections={selections}
           onSelect={handleSelect}
           onReimport={handleReimport}
           onClear={handleClear}
@@ -302,6 +403,14 @@ function Index() {
             onOpenSidebar={() => setMobileSidebarOpen(true)}
             onSelectConversation={handleSelect}
             savedName={activeBackup?.displayName}
+            report={activeReport}
+            selection={active ? (selections[active.id] ?? {}) : {}}
+            onSelectionChange={(selection) => {
+              if (!active) return;
+              setSelections((prev) => ({ ...prev, [active.id]: selection }));
+              setFocusNodeId(null);
+            }}
+            focusNodeId={focusNodeId}
             onSave={
               pendingImport
                 ? () => {

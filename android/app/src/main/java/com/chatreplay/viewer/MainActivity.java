@@ -12,6 +12,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(NativePrintPlugin.class);
+        registerPlugin(NativeAuthPlugin.class);
         super.onCreate(savedInstanceState);
 
         View webViewContainer = (View) getBridge().getWebView().getParent();

@@ -1,13 +1,23 @@
-import type { Conversation, TreeMessage } from "@/lib/chatgpt-import";
+import type { Conversation } from "@/lib/chatgpt-import";
+import { searchConversations, type SearchHit, type SearchMode } from "@/lib/chat-search";
 import { CopyrightLabel } from "@/components/CopyrightLabel";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Upload, Search, Trash2, SlidersHorizontal, X } from "lucide-react";
+import {
+  GitBranch,
+  MessageSquare,
+  Upload,
+  Search,
+  Trash2,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 interface Props {
   conversations: Conversation[];
   activeId: string | null;
-  onSelect: (id: string) => void;
+  selections: Record<string, Record<string, number>>;
+  onSelect: (id: string, selection?: Record<string, number>, nodeId?: string | null) => void;
   onReimport: () => void;
   onClear: () => void;
   onRequestClose?: () => void;
@@ -16,17 +26,6 @@ interface Props {
 
 type AuthorFilter = "all" | "user" | "assistant";
 
-interface FilteredConvo {
-  convo: Conversation;
-  matchCount: number;
-  preview: string | null;
-}
-
-function toDateInput(ts: number | null): string {
-  if (!ts) return "";
-  return new Date(ts * 1000).toISOString().slice(0, 10);
-}
-
 function dateInputToTs(value: string, endOfDay = false): number | null {
   if (!value) return null;
   const d = new Date(value + (endOfDay ? "T23:59:59" : "T00:00:00"));
@@ -34,21 +33,10 @@ function dateInputToTs(value: string, endOfDay = false): number | null {
   return Number.isFinite(t) ? t / 1000 : null;
 }
 
-function makePreview(text: string, query: string): string {
-  const idx = text.toLowerCase().indexOf(query.toLowerCase());
-  if (idx < 0) return text.slice(0, 120);
-  const start = Math.max(0, idx - 30);
-  const end = Math.min(text.length, idx + query.length + 60);
-  return (
-    (start > 0 ? "…" : "") +
-    text.slice(start, end).replace(/\s+/g, " ") +
-    (end < text.length ? "…" : "")
-  );
-}
-
 export function Sidebar({
   conversations,
   activeId,
+  selections,
   onSelect,
   onReimport,
   onClear,
@@ -60,64 +48,25 @@ export function Sidebar({
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [showFilters, setShowFilters] = useState(false);
+  const [searchMode, setSearchMode] = useState<SearchMode>("visible");
 
   const hasFilters = author !== "all" || dateFrom !== "" || dateTo !== "";
+  const isSearching = q.trim() !== "" || hasFilters;
 
-  const filtered = useMemo<FilteredConvo[]>(() => {
+  const searchHits = useMemo<SearchHit[]>(() => {
     const query = q.trim();
-    const lower = query.toLowerCase();
     const fromTs = dateInputToTs(dateFrom, false);
     const toTs = dateInputToTs(dateTo, true);
-
-    const inDateRange = (ts: number | null): boolean => {
-      if (fromTs !== null && (ts === null || ts < fromTs)) return false;
-      if (toTs !== null && (ts === null || ts > toTs)) return false;
-      return true;
-    };
-
-    const results: FilteredConvo[] = [];
-
-    for (const convo of conversations) {
-      // If no message-level filters at all, just match title against query
-      const messageLevelFilters =
-        author !== "all" || fromTs !== null || toTs !== null || query !== "";
-
-      if (!messageLevelFilters) {
-        results.push({ convo, matchCount: 0, preview: null });
-        continue;
-      }
-
-      // Date filter against conversation-level dates when no query/author
-      let matchCount = 0;
-      let preview: string | null = null;
-      const titleMatches = query !== "" && convo.title.toLowerCase().includes(lower);
-
-      const nodes: TreeMessage[] = Object.values(convo.nodes);
-      for (const node of nodes) {
-        if (author !== "all" && node.role !== author) continue;
-        if (!inDateRange(node.createTime ?? convo.updateTime ?? convo.createTime)) continue;
-        if (query !== "") {
-          if (!node.text.toLowerCase().includes(lower)) continue;
-        }
-        matchCount++;
-        if (!preview && node.text) preview = makePreview(node.text, query || "");
-      }
-
-      // Convo passes if it has any matching messages, OR (no query) any messages pass author/date
-      const convoDateOk = inDateRange(convo.updateTime ?? convo.createTime);
-
-      if (query !== "") {
-        if (matchCount > 0 || (titleMatches && convoDateOk)) {
-          results.push({ convo, matchCount, preview });
-        }
-      } else {
-        // author or date filters only
-        if (matchCount > 0) results.push({ convo, matchCount, preview });
-      }
-    }
-
-    return results;
-  }, [q, author, dateFrom, dateTo, conversations]);
+    if (!isSearching) return [];
+    return searchConversations(conversations, {
+      query,
+      mode: searchMode,
+      author,
+      fromTs,
+      toTs,
+      selections,
+    });
+  }, [q, author, dateFrom, dateTo, conversations, isSearching, searchMode, selections]);
 
   function resetFilters() {
     setAuthor("all");
@@ -218,6 +167,32 @@ export function Sidebar({
           <div className="space-y-2 rounded-md border bg-background/50 p-2.5">
             <div>
               <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Search scope
+              </label>
+              <div className="grid grid-cols-2 gap-1">
+                {(["visible", "all-variants"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setSearchMode(mode)}
+                    className={`rounded px-2 py-1 text-xs transition-colors ${
+                      searchMode === mode
+                        ? "bg-primary text-primary-foreground"
+                        : "border hover:bg-sidebar-accent"
+                    }`}
+                  >
+                    {mode === "visible" ? "Visible" : "All variants"}
+                  </button>
+                ))}
+              </div>
+              {searchMode === "all-variants" && (
+                <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                  Searches edited and regenerated paths too. Large exports can take longer.
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 Author
               </label>
               <div className="flex gap-1">
@@ -266,48 +241,83 @@ export function Sidebar({
 
       <div className="mt-3 flex-1 overflow-y-auto px-2 pb-3">
         <div className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {filtered.length} result{filtered.length === 1 ? "" : "s"}
+          {isSearching
+            ? `${searchHits.length} result${searchHits.length === 1 ? "" : "s"}`
+            : `${conversations.length} chat${conversations.length === 1 ? "" : "s"}`}
         </div>
         <ul className="space-y-0.5">
-          {filtered.map(({ convo, matchCount, preview }) => {
-            const dateLabel = convo.updateTime
-              ? new Date(convo.updateTime * 1000).toLocaleDateString()
-              : "";
-            return (
-              <li key={convo.id}>
-                <button
-                  onClick={() => onSelect(convo.id)}
-                  className={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors ${
-                    activeId === convo.id
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "hover:bg-sidebar-accent/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <span className="flex-1 truncate">{convo.title}</span>
-                    {matchCount > 0 && (
-                      <span className="shrink-0 rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
-                        {matchCount}
-                      </span>
-                    )}
-                  </div>
-                  {(preview || dateLabel) && (
-                    <div className="ml-6 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                      {dateLabel && <span className="shrink-0">{dateLabel}</span>}
-                      {preview && (
-                        <>
-                          <span>·</span>
-                          <span className="truncate">{preview}</span>
-                        </>
+          {!isSearching &&
+            conversations.map((convo) => {
+              const dateLabel = convo.updateTime
+                ? new Date(convo.updateTime * 1000).toLocaleDateString()
+                : "";
+              return (
+                <li key={convo.id}>
+                  <button
+                    onClick={() => onSelect(convo.id)}
+                    className={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors ${
+                      activeId === convo.id
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                        : "hover:bg-sidebar-accent/60"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <span className="flex-1 truncate">{convo.title}</span>
+                      {(convo.branchChildren?.length || convo.branchSourceId) && (
+                        <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       )}
                     </div>
-                  )}
-                </button>
-              </li>
-            );
-          })}
-          {filtered.length === 0 && (
+                    {dateLabel && (
+                      <div className="ml-6 truncate text-[11px] text-muted-foreground">
+                        {dateLabel}
+                      </div>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          {isSearching &&
+            searchHits.map((hit) => {
+              return (
+                <li key={hit.key}>
+                  <button
+                    onClick={() => onSelect(hit.conversationId, hit.selection, hit.nodeId)}
+                    className={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors ${
+                      activeId === hit.conversationId
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                        : "hover:bg-sidebar-accent/60"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {hit.isVariant ? (
+                        <GitBranch className="h-4 w-4 shrink-0 text-primary" />
+                      ) : (
+                        <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      )}
+                      <span className="flex-1 truncate">{hit.conversationTitle}</span>
+                      <span className="shrink-0 rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
+                        {hit.label}
+                      </span>
+                    </div>
+                    <div className="ml-6 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      {hit.createTime && (
+                        <span className="shrink-0">
+                          {new Date(hit.createTime * 1000).toLocaleDateString()}
+                        </span>
+                      )}
+                      <span className="truncate">{hit.preview}</span>
+                    </div>
+                    {hit.isVariant && (
+                      <div className="ml-6 text-[11px] text-primary">
+                        Opens the older edited/regenerated path.
+                      </div>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          {isSearching && searchHits.length === 0 && (
             <li className="px-3 py-6 text-center text-xs text-muted-foreground">
               No matches. Try a different keyword or reset filters.
             </li>

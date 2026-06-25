@@ -171,7 +171,8 @@ function Help() {
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
                 Pick a title from the sidebar, search titles and messages, or filter by author and
                 date. Messages appear in reading order with Markdown, lists, code, and tables
-                formatted for you.
+                formatted for you. Turn on all-variant search when you need older edited prompts or
+                regenerated responses.
               </p>
             </div>
             <HelpScreenshot
@@ -242,7 +243,8 @@ function Help() {
             <div className="rounded-lg border bg-background/70 p-3">
               <span className="font-medium text-foreground">Find conversations quickly.</span>{" "}
               <span className="text-muted-foreground">
-                Search message text and titles, then narrow results by author or date.
+                Search message text and titles, then narrow results by author, date, or branch
+                variant scope.
               </span>
             </div>
             <div className="rounded-lg border bg-background/70 p-3">
@@ -458,6 +460,21 @@ function Help() {
               <ExternalLink className="h-4 w-4" />
             </a>
           </section>
+        </section>
+
+        <section className="rounded-lg border bg-card p-4 text-card-foreground sm:p-5">
+          <div className="flex items-start gap-3">
+            <Search className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+            <div>
+              <h3 className="font-semibold">Searching edited and regenerated variants</h3>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                The default search follows the visible conversation path. If you turn on all-variant
+                search, Chat Replay also checks older edited prompts and regenerated responses, then
+                opens the exact path where the match happened. Large exports with many branches can
+                take longer to scan.
+              </p>
+            </div>
+          </div>
         </section>
 
         <section className="rounded-lg border bg-muted/40 p-4 text-sm leading-6 text-muted-foreground sm:p-5">

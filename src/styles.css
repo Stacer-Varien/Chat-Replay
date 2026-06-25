@@ -131,6 +131,13 @@
     padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
     padding-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
   }
+  button,
+  a,
+  input,
+  textarea,
+  select {
+    touch-action: manipulation;
+  }
 }
 
 @layer components {
@@ -275,8 +282,30 @@
     margin: 0.5em 0;
   }
 
+  .md-body video,
+  .md-body audio,
+  .md-body iframe {
+    max-width: 100%;
+  }
+
   .md-body input[type="checkbox"] {
     margin-right: 0.4em;
     transform: translateY(1px);
+  }
+
+  @media (max-width: 480px) {
+    .md-body {
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .md-body pre {
+      max-width: 100%;
+      font-size: 12px;
+    }
+
+    .md-body table {
+      max-width: 100%;
+    }
   }
 }

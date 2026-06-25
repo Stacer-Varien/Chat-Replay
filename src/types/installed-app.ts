@@ -5,8 +5,10 @@ export interface InstalledBackupSummary {
   displayName: string;
   originalFileName: string;
   archiveFileName: string;
+  sourceKind?: string | null;
   importedAt: number;
   updatedAt: number;
+  lastOpenedAt?: number | null;
   exportedAt: number | null;
   version: number;
   conversationCount: number;
@@ -33,10 +35,27 @@ export interface InstalledSaveResult {
   backup: InstalledBackupSummary;
 }
 
+export interface InstalledLockState {
+  configured: boolean;
+  biometricAvailable: boolean;
+  biometricEnabled: boolean;
+}
+
 export interface InstalledBackupApi {
   platform: "electron" | "android";
   listBackups: () => Promise<InstalledBackupSummary[]>;
   loadBackup: (id: string) => Promise<InstalledBackupPayload>;
   saveBackup: (payload: InstalledSavePayload) => Promise<InstalledSaveResult>;
+  renameBackup: (id: string, displayName: string) => Promise<InstalledBackupSummary>;
+  markBackupOpened: (id: string) => Promise<InstalledBackupSummary>;
   deleteBackup: (id: string) => Promise<{ ok: true }>;
+  getLockState: () => Promise<InstalledLockState>;
+  setupLock: (
+    passcode: string,
+    options?: { biometricEnabled?: boolean },
+  ) => Promise<InstalledLockState>;
+  verifyLock: (passcode: string) => Promise<{ ok: true }>;
+  disableLock: (passcode: string) => Promise<InstalledLockState>;
+  resetLockAndBackups: () => Promise<{ ok: true }>;
+  unlockWithBiometric?: () => Promise<{ ok: true }>;
 }

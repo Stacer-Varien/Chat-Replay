@@ -1,14 +1,18 @@
-import { useMemo, useRef, useState } from "react";
-import type { Conversation } from "@/lib/chatgpt-import";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Conversation, ImportHealthReport } from "@/lib/chatgpt-import";
 import { computeChain } from "@/lib/chatgpt-import";
 import { Message } from "./Message";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { canUseNativePrint, printHtmlOnAndroid } from "@/lib/native-print";
-import { Bot, Download, GitBranch, Menu, Save } from "lucide-react";
+import { Activity, Bot, Download, GitBranch, Menu, Route, Save } from "lucide-react";
 
 function fmtDate(ts: number | null) {
   if (!ts) return "";
   return new Date(ts * 1000).toLocaleString();
+}
+
+function fmtShortDate(ts: number | null) {
+  return ts ? new Date(ts * 1000).toLocaleDateString() : "Unknown";
 }
 
 interface ConversationViewProps {
@@ -17,6 +21,10 @@ interface ConversationViewProps {
   onSelectConversation?: (id: string) => void;
   onSave?: () => void;
   savedName?: string;
+  selection: Record<string, number>;
+  onSelectionChange: (selection: Record<string, number>) => void;
+  focusNodeId?: string | null;
+  report?: ImportHealthReport | null;
 }
 
 export function ConversationView({
@@ -25,20 +33,36 @@ export function ConversationView({
   onSelectConversation,
   onSave,
   savedName,
+  selection,
+  onSelectionChange,
+  focusNodeId,
+  report,
 }: ConversationViewProps) {
-  const [selections, setSelections] = useState<Record<string, Record<string, number>>>({});
   const [assistantOnly, setAssistantOnly] = useState(false);
+  const [branchMapOpen, setBranchMapOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const printRef = useRef<HTMLDivElement>(null);
 
   const rawChain = useMemo(() => {
     if (!conversation) return [];
-    return computeChain(conversation, selections[conversation.id] ?? {});
-  }, [conversation, selections]);
+    return computeChain(conversation, selection);
+  }, [conversation, selection]);
 
   const chain = useMemo(() => {
     if (!assistantOnly) return rawChain;
     return rawChain.filter((item) => item.node.role === "assistant");
   }, [rawChain, assistantOnly]);
+
+  useEffect(() => {
+    if (!focusNodeId) return;
+    const handle = window.requestAnimationFrame(() => {
+      document.getElementById(`message-${focusNodeId}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [focusNodeId, rawChain]);
 
   if (!conversation) {
     return (
@@ -70,14 +94,14 @@ export function ConversationView({
     );
   }
 
-  function updateSel(convId: string, key: string, delta: number, total: number) {
-    setSelections((prev) => {
-      const conv = { ...(prev[convId] ?? {}) };
-      const current = conv[key] ?? 0;
-      const next = Math.min(Math.max(current + delta, 0), total - 1);
-      conv[key] = next;
-      return { ...prev, [convId]: conv };
-    });
+  function updateSel(key: string, delta: number, total: number) {
+    const current = selection[key] ?? 0;
+    const next = Math.min(Math.max(current + delta, 0), total - 1);
+    onSelectionChange({ ...selection, [key]: next });
+  }
+
+  function setSel(key: string, index: number) {
+    onSelectionChange({ ...selection, [key]: index });
   }
 
   function exportPdf() {
@@ -308,6 +332,26 @@ ${printRef.current.innerHTML}
               <Download className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Export PDF</span>
             </button>
+            <button
+              type="button"
+              onClick={() => setBranchMapOpen((open) => !open)}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent"
+              title="Show branch map"
+            >
+              <Route className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Branch map</span>
+            </button>
+            {report && (
+              <button
+                type="button"
+                onClick={() => setReportOpen((open) => !open)}
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent"
+                title="Show import health report"
+              >
+                <Activity className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Import report</span>
+              </button>
+            )}
             <label className="flex h-9 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent">
               <input
                 type="checkbox"
@@ -340,14 +384,133 @@ ${printRef.current.innerHTML}
           </div>
         </div>
       </header>
+      {reportOpen && report && (
+        <section className="border-b bg-muted/25 px-3 py-3 sm:px-4 lg:px-6">
+          <div className="mx-auto grid max-w-5xl gap-3 text-sm md:grid-cols-4">
+            {[
+              ["Source", report.sourceLabel],
+              ["Conversations", report.conversationCount.toLocaleString()],
+              ["Messages", report.messageCount.toLocaleString()],
+              ["Attachments", report.attachmentCount.toLocaleString()],
+              ["Images", report.imageAttachmentCount.toLocaleString()],
+              ["Missing files", report.missingAttachmentCount.toLocaleString()],
+              ["Branch choices", report.branchChoiceCount.toLocaleString()],
+              ["Latest chat", fmtShortDate(report.latestConversationUpdate)],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-md border bg-background px-3 py-2">
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  {label}
+                </div>
+                <div className="mt-1 truncate font-medium">{value}</div>
+              </div>
+            ))}
+          </div>
+          {report.warnings.length > 0 && (
+            <div className="mx-auto mt-3 max-w-5xl space-y-2">
+              {report.warnings.map((warning) => (
+                <div
+                  key={warning.code}
+                  className="rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-muted-foreground"
+                >
+                  {warning.message}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+      {branchMapOpen && (
+        <section className="border-b bg-muted/25 px-3 py-3 text-sm sm:px-4 lg:px-6">
+          <div className="mx-auto grid max-w-5xl gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,0.45fr)]">
+            <div className="min-w-0">
+              <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <Route className="h-3.5 w-3.5" />
+                Current path
+              </div>
+              <div className="flex min-w-0 flex-wrap gap-2">
+                {rawChain.map((item, pathIndex) => (
+                  <div
+                    key={item.node.id}
+                    className="flex max-w-full items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs"
+                  >
+                    <span className="shrink-0 text-muted-foreground">{pathIndex + 1}</span>
+                    <span className="max-w-[10rem] truncate">
+                      {item.node.role === "user" ? "Prompt" : "Response"}
+                    </span>
+                    {item.total > 1 && (
+                      <span className="rounded bg-primary/10 px-1.5 text-primary">
+                        {item.index + 1}/{item.total}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="min-w-0 space-y-2">
+              {rawChain
+                .filter((item) => item.total > 1)
+                .map((item) => (
+                  <div
+                    key={`${item.selectionKey}-${item.node.id}`}
+                    className="rounded-md border bg-background p-2"
+                  >
+                    <div className="mb-2 truncate text-xs font-medium">
+                      {item.node.role === "user" ? "Prompt variants" : "Response variants"}
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {Array.from({ length: item.total }, (_, index) => (
+                        <button
+                          key={index}
+                          type="button"
+                          onClick={() => setSel(item.selectionKey, index)}
+                          className={`h-7 rounded border px-2 text-xs ${
+                            index === item.index
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "hover:bg-accent"
+                          }`}
+                        >
+                          {index + 1}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              {conversation.branchSourceId && (
+                <button
+                  type="button"
+                  onClick={() => onSelectConversation?.(conversation.branchSourceId!)}
+                  className="flex w-full items-center gap-2 rounded-md border bg-background px-2 py-2 text-left text-xs hover:bg-accent"
+                >
+                  <GitBranch className="h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">
+                    Branched from {conversation.branchSourceTitle ?? "original chat"}
+                  </span>
+                </button>
+              )}
+              {conversation.branchChildren?.map((branch) => (
+                <button
+                  key={branch.id}
+                  type="button"
+                  onClick={() => onSelectConversation?.(branch.id)}
+                  className="flex w-full items-center gap-2 rounded-md border bg-background px-2 py-2 text-left text-xs hover:bg-accent"
+                >
+                  <GitBranch className="h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{branch.title}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
       <div className="flex-1 overflow-y-auto">
         <div ref={printRef} className="divide-y divide-border/40">
           {chain.map((item) => (
             <Message
               key={item.node.id}
               item={item}
-              onPrev={() => updateSel(conversation.id, item.selectionKey, -1, item.total)}
-              onNext={() => updateSel(conversation.id, item.selectionKey, +1, item.total)}
+              highlighted={focusNodeId === item.node.id}
+              onPrev={() => updateSel(item.selectionKey, -1, item.total)}
+              onNext={() => updateSel(item.selectionKey, +1, item.total)}
             />
           ))}
         </div>
