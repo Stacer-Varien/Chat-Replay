@@ -134,6 +134,7 @@ function Index() {
 
   useEffect(() => {
     if (!installedApi || savedBackups.length === 0) return;
+    if (installedApi.platform === "android") return;
 
     let wasHidden = document.visibilityState === "hidden";
     const showHomeWhenReopened = () => {
@@ -155,13 +156,22 @@ function Index() {
   useEffect(() => {
     if (installedApi?.platform !== "android" || savedBackups.length === 0) return;
 
-    const showHomeOnAndroidResume = () => {
+    const lockAndroidOnResume = () => {
       if (lockState?.configured) setAppUnlocked(false);
-      showInstalledHome();
     };
-    document.addEventListener("resume", showHomeOnAndroidResume);
-    return () => document.removeEventListener("resume", showHomeOnAndroidResume);
-  }, [installedApi, savedBackups.length, showInstalledHome, lockState?.configured]);
+    const lockAndroidOnVisibilityReturn = () => {
+      if (document.visibilityState === "visible" && lockState?.configured) {
+        setAppUnlocked(false);
+      }
+    };
+
+    document.addEventListener("resume", lockAndroidOnResume);
+    document.addEventListener("visibilitychange", lockAndroidOnVisibilityReturn);
+    return () => {
+      document.removeEventListener("resume", lockAndroidOnResume);
+      document.removeEventListener("visibilitychange", lockAndroidOnVisibilityReturn);
+    };
+  }, [installedApi, savedBackups.length, lockState?.configured]);
 
   async function refreshSavedBackups() {
     const backups = (await installedApi?.listBackups()) ?? [];
