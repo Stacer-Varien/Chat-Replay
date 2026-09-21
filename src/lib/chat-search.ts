@@ -61,6 +61,28 @@ function makePreview(text: string, query: string): string {
   }`;
 }
 
+/** Supports quoted phrases, OR groups, and excluded terms (for example: `"project plan" OR roadmap -draft`). */
+function matchesSearchQuery(text: string, query: string): boolean {
+  const normalized = text.toLowerCase();
+  const groups = query
+    .toLowerCase()
+    .split(/\s+\bor\b\s+/i)
+    .map((group) => group.trim());
+  return groups.some((group) => {
+    const terms = group.match(/(?:"[^"]+")|\S+/g) ?? [];
+    return terms.every((rawTerm) => {
+      const excluded = rawTerm.startsWith("-") || rawTerm.toLowerCase().startsWith("not:");
+      const term = rawTerm
+        .replace(/^(?:-|not:)/i, "")
+        .replace(/^"|"$/g, "")
+        .trim();
+      if (!term) return true;
+      const contains = normalized.includes(term);
+      return excluded ? !contains : contains;
+    });
+  });
+}
+
 function roleVariantName(role: TreeMessage["role"]): string {
   return role === "user" ? "Prompt" : role === "assistant" ? "Response" : "Message";
 }
@@ -123,7 +145,7 @@ function nodeMatches(
   ) {
     return false;
   }
-  return lowerQuery === "" || node.text.toLowerCase().includes(lowerQuery);
+  return lowerQuery === "" || matchesSearchQuery(node.text, options.query.trim());
 }
 
 export function searchConversations(
@@ -141,7 +163,7 @@ export function searchConversations(
     const convoDate = conversation.updateTime ?? conversation.createTime;
     if (
       query &&
-      conversation.title.toLowerCase().includes(lowerQuery) &&
+      matchesSearchQuery(conversation.title, query) &&
       inDateRange(convoDate, options.fromTs, options.toTs)
     ) {
       hits.push({

@@ -106,6 +106,13 @@ export function ConversationView({
 
   function exportPdf() {
     if (!printRef.current || !conversation) return;
+    if (
+      !window.confirm(
+        "Privacy check: this PDF can include private prompts, responses, and attachments. Review the destination before sharing. Continue to export?",
+      )
+    ) {
+      return;
+    }
     const styles = Array.from(document.styleSheets)
       .map((sheet) => {
         try {
