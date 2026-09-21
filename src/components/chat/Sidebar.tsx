@@ -20,6 +20,7 @@ interface Props {
   onSelect: (id: string, selection?: Record<string, number>, nodeId?: string | null) => void;
   onReimport: () => void;
   onClear: () => void;
+  onOpenDashboard?: () => void;
   onRequestClose?: () => void;
   className?: string;
 }
@@ -40,6 +41,7 @@ export function Sidebar({
   onSelect,
   onReimport,
   onClear,
+  onOpenDashboard,
   onRequestClose,
   className,
 }: Props) {
@@ -109,6 +111,16 @@ export function Sidebar({
           <Upload className="h-4 w-4" />
           Import new export
         </button>
+        {onOpenDashboard && (
+          <button
+            type="button"
+            onClick={onOpenDashboard}
+            className="mt-2 flex w-full items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors hover:bg-sidebar-accent"
+          >
+            <MessageSquare className="h-4 w-4" />
+            Archive dashboard
+          </button>
+        )}
       </div>
 
       <div className="px-3 pt-3 space-y-2">
@@ -130,6 +142,10 @@ export function Sidebar({
             </button>
           )}
         </div>
+        <p className="px-0.5 text-[11px] leading-4 text-muted-foreground">
+          Use quotes for a phrase, <code>OR</code> for alternatives, or <code>-word</code> to
+          exclude.
+        </p>
 
         <button
           onClick={() => setShowFilters((v) => !v)}

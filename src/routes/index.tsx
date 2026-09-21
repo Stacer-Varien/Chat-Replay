@@ -4,6 +4,7 @@ import { ImportDropzone } from "@/components/chat/ImportDropzone";
 import { LockGate } from "@/components/chat/LockGate";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { ConversationView } from "@/components/chat/ConversationView";
+import { ArchiveDashboard } from "@/components/chat/ArchiveDashboard";
 import {
   computeChain,
   parseChatGPTExportWithMetadata,
@@ -88,6 +89,7 @@ function Index() {
   const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
   const [lockState, setLockState] = useState<InstalledLockState | null>(null);
   const [appUnlocked, setAppUnlocked] = useState(true);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
 
   const showInstalledHome = useCallback(() => {
     setConversations(null);
@@ -99,6 +101,7 @@ function Index() {
     setSaveDialogOpen(false);
     setFocusNodeId(null);
     setMobileSidebarOpen(false);
+    setDashboardOpen(false);
   }, []);
 
   useEffect(() => {
@@ -131,37 +134,6 @@ function Index() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (!installedApi || savedBackups.length === 0) return;
-
-    let wasHidden = document.visibilityState === "hidden";
-    const showHomeWhenReopened = () => {
-      if (document.visibilityState === "hidden") {
-        wasHidden = true;
-        return;
-      }
-      if (!wasHidden) return;
-
-      wasHidden = false;
-      if (lockState?.configured) setAppUnlocked(false);
-      showInstalledHome();
-    };
-
-    document.addEventListener("visibilitychange", showHomeWhenReopened);
-    return () => document.removeEventListener("visibilitychange", showHomeWhenReopened);
-  }, [installedApi, savedBackups.length, showInstalledHome, lockState?.configured]);
-
-  useEffect(() => {
-    if (installedApi?.platform !== "android" || savedBackups.length === 0) return;
-
-    const showHomeOnAndroidResume = () => {
-      if (lockState?.configured) setAppUnlocked(false);
-      showInstalledHome();
-    };
-    document.addEventListener("resume", showHomeOnAndroidResume);
-    return () => document.removeEventListener("resume", showHomeOnAndroidResume);
-  }, [installedApi, savedBackups.length, showInstalledHome, lockState?.configured]);
 
   async function refreshSavedBackups() {
     const backups = (await installedApi?.listBackups()) ?? [];
@@ -329,6 +301,7 @@ function Index() {
     }
     setFocusNodeId(nodeId ?? null);
     setMobileSidebarOpen(false);
+    setDashboardOpen(false);
   }
 
   if (!hydrated) return null;
@@ -390,6 +363,10 @@ function Index() {
           onSelect={handleSelect}
           onReimport={handleReimport}
           onClear={handleClear}
+          onOpenDashboard={() => {
+            setDashboardOpen(true);
+            setMobileSidebarOpen(false);
+          }}
           onRequestClose={() => setMobileSidebarOpen(false)}
           className={`fixed inset-y-0 left-0 z-50 w-[min(20rem,calc(100vw-1rem))] shadow-xl transition-transform duration-200 sm:w-80 md:static md:z-auto md:w-72 md:translate-x-0 md:shadow-none lg:w-80 ${
             mobileSidebarOpen
@@ -398,28 +375,38 @@ function Index() {
           }`}
         />
         <main className="min-w-0 flex-1 overflow-hidden">
-          <ConversationView
-            conversation={active}
-            onOpenSidebar={() => setMobileSidebarOpen(true)}
-            onSelectConversation={handleSelect}
-            savedName={activeBackup?.displayName}
-            report={activeReport}
-            selection={active ? (selections[active.id] ?? {}) : {}}
-            onSelectionChange={(selection) => {
-              if (!active) return;
-              setSelections((prev) => ({ ...prev, [active.id]: selection }));
-              setFocusNodeId(null);
-            }}
-            focusNodeId={focusNodeId}
-            onSave={
-              pendingImport
-                ? () => {
-                    setSaveDialogOpen(true);
-                    setImportStatus(null);
-                  }
-                : undefined
-            }
-          />
+          {dashboardOpen ? (
+            <ArchiveDashboard
+              conversations={conversations}
+              report={activeReport}
+              savedBackups={savedBackups}
+              onClose={() => setDashboardOpen(false)}
+              onSelect={(id, nodeId) => handleSelect(id, undefined, nodeId)}
+            />
+          ) : (
+            <ConversationView
+              conversation={active}
+              onOpenSidebar={() => setMobileSidebarOpen(true)}
+              onSelectConversation={handleSelect}
+              savedName={activeBackup?.displayName}
+              report={activeReport}
+              selection={active ? (selections[active.id] ?? {}) : {}}
+              onSelectionChange={(selection) => {
+                if (!active) return;
+                setSelections((prev) => ({ ...prev, [active.id]: selection }));
+                setFocusNodeId(null);
+              }}
+              focusNodeId={focusNodeId}
+              onSave={
+                pendingImport
+                  ? () => {
+                      setSaveDialogOpen(true);
+                      setImportStatus(null);
+                    }
+                  : undefined
+              }
+            />
+          )}
         </main>
       </div>
 
