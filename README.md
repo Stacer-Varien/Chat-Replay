@@ -59,11 +59,17 @@ npm install
 npm run electron:dev
 ```
 
-### Production build
+### Production checks and web builds
 
 ```bash
+npm run typecheck
+npm run lint
 npm run build
+npm run build:vercel
 ```
+
+`build` creates the default web output. `build:vercel` creates `.vercel/output` for Vercel.
+The desktop and Android commands below select their own build targets automatically.
 
 ### Windows desktop release build
 
@@ -71,11 +77,31 @@ npm run build
 npm run electron:build
 ```
 
-This produces the desktop release output in the release folder.
+This produces both `Chat Replay-Setup-1.5.0-x64.exe` and
+`Chat Replay-Portable-1.5.0-x64.exe` in the `release` folder on a Windows x64 build. Code signing
+is recommended before public distribution.
+
+### Vercel deployment
+
+The included `vercel.json` runs the server-rendered Vercel build automatically. Import the Git
+repository into Vercel or deploy from the CLI:
+
+```bash
+npx vercel --prod
+```
+
+Vercel uses `npm ci` with the checked-in lockfile for a reproducible install.
 
 ### Android app
 
-Install Android Studio with its Android SDK and Java Development Kit 21, then run:
+Install Android Studio with its Android SDK and JDK 21. Select the JDK in PowerShell before
+building (replace the example path with your JDK 21 installation):
+
+```powershell
+$env:JAVA_HOME = "C:\path\to\jdk-21"
+```
+
+Then run:
 
 ```bash
 npm run android:sync
@@ -100,10 +126,27 @@ npm run android:build
 
 The APK is written to `android/app/build/outputs/apk/debug/app-debug.apk`.
 
+For a publishable signed release, copy `android/keystore.properties.example` to
+`android/keystore.properties`, replace all four placeholder values, and keep the keystore outside
+Git. `RELEASE_STORE_FILE` is relative to the `android` directory, so the example keystore belongs
+at `android/release-keystore.jks`. The same `RELEASE_*` values can be supplied as CI environment
+variables or Gradle properties. Then build either:
+
+```bash
+npm run android:build:release
+npm run android:bundle:release
+```
+
+The signed APK is written to `android/app/build/outputs/apk/release/app-release.apk`; the Android
+App Bundle for Play Store uploads is written to `android/app/build/outputs/bundle/release/app-release.aab`.
+
 The Android app has the same installed-app backup flow as Electron: imports open temporarily, and
 users can explicitly save named chat collections, reopen them later, replace older copies with a
 newer export, or delete them. Saved data remains in the app's private local storage. Export PDF
 opens Android's native print dialog, where the conversation can be saved as a PDF.
+Saved conversations open from their local cache immediately; archives are read again only when
+attachments need to be restored or a damaged cache needs recovery. Existing Android collections
+remain available after the local storage upgrade.
 
 ## Release notes
 

@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ImportDropzone } from "@/components/chat/ImportDropzone";
 import { LockGate } from "@/components/chat/LockGate";
 import { Sidebar } from "@/components/chat/Sidebar";
@@ -45,28 +45,32 @@ type ImportedFile = ParsedChatGPTExport & {
 };
 
 function hasRenderableAssistantMessages(conversations: Conversation[]) {
-  const hasAssistantNodes = conversations.some((conversation) =>
-    Object.values(conversation.nodes).some((node) => node.role === "assistant"),
-  );
-  if (!hasAssistantNodes) return false;
-
   return conversations.some((conversation) =>
     computeChain(conversation, {}).some((item) => item.node.role === "assistant"),
   );
 }
 
+function needsAttachmentRestore(loaded: InstalledBackupPayload): boolean {
+  if (loaded.report) return loaded.report.availableAttachmentCount > 0;
+  return loaded.conversations.some((conversation) =>
+    Object.values(conversation.nodes).some((node) =>
+      node.attachments?.some((attachment) => !attachment.unavailableReason),
+    ),
+  );
+}
+
 async function restoreInstalledConversations(
+  api: InstalledBackupApi,
   loaded: InstalledBackupPayload,
-): Promise<{ conversations: Conversation[]; report: ImportHealthReport | null }> {
-  if (!loaded.archiveData) return { conversations: loaded.conversations, report: null };
+): Promise<ParsedChatGPTExport | null> {
   try {
-    const source = new File([loaded.archiveData], loaded.backup.originalFileName);
+    const archiveData = await api.loadBackupArchive(loaded.backup.id);
+    if (!archiveData) return null;
+    const source = new File([archiveData], loaded.backup.originalFileName);
     const parsed = await parseChatGPTExportWithMetadata(source);
-    return hasRenderableAssistantMessages(parsed.conversations)
-      ? { conversations: parsed.conversations, report: parsed.report }
-      : { conversations: loaded.conversations, report: null };
+    return hasRenderableAssistantMessages(parsed.conversations) ? parsed : null;
   } catch {
-    return { conversations: loaded.conversations, report: null };
+    return null;
   }
 }
 
@@ -90,8 +94,10 @@ function Index() {
   const [lockState, setLockState] = useState<InstalledLockState | null>(null);
   const [appUnlocked, setAppUnlocked] = useState(true);
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  const loadGeneration = useRef(0);
 
   const showInstalledHome = useCallback(() => {
+    loadGeneration.current += 1;
     setConversations(null);
     setActiveId(null);
     setActiveBackup(null);
@@ -151,28 +157,60 @@ function Index() {
     const api = installedApi;
     if (!api) return;
 
+    const generation = ++loadGeneration.current;
     setImportStatus(null);
     try {
       const loaded = await api.loadBackup(id);
-      const restored = await restoreInstalledConversations(loaded);
-      if (!hasRenderableAssistantMessages(restored.conversations)) {
-        throw new Error("This saved backup has no readable assistant messages.");
+      if (generation !== loadGeneration.current) return;
+
+      let restored = loaded.conversations;
+      let report = loaded.report;
+      let parsedArchive = false;
+      if (!hasRenderableAssistantMessages(restored)) {
+        const parsed = await restoreInstalledConversations(api, loaded);
+        if (!parsed) throw new Error("This saved backup has no readable assistant messages.");
+        restored = parsed.conversations;
+        report = parsed.report;
+        parsedArchive = true;
       }
-      const openedBackup = await api.markBackupOpened(id);
-      await refreshSavedBackups();
-      setConversations(restored.conversations);
-      setActiveId(restored.conversations[0]?.id ?? null);
-      setActiveBackup(openedBackup);
-      setActiveReport(restored.report);
+      if (generation !== loadGeneration.current) return;
+      setConversations(restored);
+      setActiveId(restored[0]?.id ?? null);
+      setActiveBackup(loaded.backup);
+      setActiveReport(report);
       setPendingImport(null);
       setFocusNodeId(null);
       setMobileSidebarOpen(false);
+
+      void api
+        .markBackupOpened(id)
+        .then(async (openedBackup) => {
+          const backups = await api.listBackups();
+          if (generation !== loadGeneration.current) return;
+          setActiveBackup(openedBackup);
+          setSavedBackups(backups);
+        })
+        .catch((error) => console.error("Could not update last-opened time", error));
+
+      if (!parsedArchive && needsAttachmentRestore(loaded)) {
+        setTimeout(() => {
+          if (generation !== loadGeneration.current) return;
+          void restoreInstalledConversations(api, loaded).then((parsed) => {
+            if (!parsed || generation !== loadGeneration.current) return;
+            setConversations(parsed.conversations);
+            setActiveReport(parsed.report);
+          });
+        }, 0);
+      }
     } catch (e) {
-      setImportStatus(e instanceof Error ? e.message : "Failed to open saved backup.");
+      if (generation === loadGeneration.current) {
+        setImportStatus(e instanceof Error ? e.message : "Failed to open saved backup.");
+      }
     }
   }
 
   async function handleLoaded(imported: ImportedFile) {
+    loadGeneration.current += 1;
     setImportStatus(null);
     setConversations(imported.conversations);
     setActiveId(imported.conversations[0]?.id ?? null);
@@ -239,6 +277,7 @@ function Index() {
         fileName: pendingImport.file.name,
         archiveData: await pendingImport.file.arrayBuffer(),
         conversations: pendingImport.conversations,
+        report: pendingImport.report,
         permissionConfirmed: savePermissionConfirmed,
         metadata: pendingImport.metadata,
       });
@@ -266,6 +305,7 @@ function Index() {
     const api = installedApi;
     if (api && activeBackup) {
       if (!confirm(`Remove "${activeBackup.displayName}" from this installed app?`)) return;
+      loadGeneration.current += 1;
       await api.deleteBackup(activeBackup.id);
       await refreshSavedBackups();
       setConversations(null);
@@ -276,6 +316,7 @@ function Index() {
     }
 
     if (!confirm("Close the currently imported conversations?")) return;
+    loadGeneration.current += 1;
     setConversations(null);
     setActiveId(null);
     setActiveBackup(null);
@@ -285,6 +326,7 @@ function Index() {
   }
 
   function handleReimport() {
+    loadGeneration.current += 1;
     setConversations(null);
     setActiveBackup(null);
     setPendingImport(null);

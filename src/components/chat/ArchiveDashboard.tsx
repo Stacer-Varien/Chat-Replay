@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Paperclip,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { Conversation, ImportHealthReport } from "@/lib/chatgpt-import";
 import { archiveAttachments, getArchiveInsights } from "@/lib/archive-insights";
 import type { InstalledBackupSummary } from "@/types/installed-app";
@@ -42,6 +43,12 @@ export function ArchiveDashboard({
         : true,
   );
   const activityMax = Math.max(1, ...insights.monthlyActivity.map((item) => item.messages));
+  const summaryCards: { label: string; value: number; Icon: LucideIcon }[] = [
+    { label: "Conversations", value: insights.conversationCount, Icon: Archive },
+    { label: "Messages", value: insights.messageCount, Icon: MessageSquare },
+    { label: "Attachments", value: insights.attachmentCount, Icon: Paperclip },
+    { label: "Images", value: insights.imageAttachmentCount, Icon: FileImage },
+  ];
 
   return (
     <div className="h-full overflow-y-auto bg-background text-foreground">
@@ -64,21 +71,13 @@ export function ArchiveDashboard({
         <section>
           <h2 className="text-sm font-semibold">Your archive at a glance</h2>
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              ["Conversations", insights.conversationCount, Archive],
-              ["Messages", insights.messageCount, MessageSquare],
-              ["Attachments", insights.attachmentCount, Paperclip],
-              ["Images", insights.imageAttachmentCount, FileImage],
-            ].map(([label, value, Icon]) => {
-              const IconComponent = Icon as typeof Archive;
-              return (
-                <div key={String(label)} className="rounded-xl border bg-card p-4">
-                  <IconComponent className="h-4 w-4 text-primary" />
-                  <div className="mt-3 text-2xl font-semibold">{value}</div>
-                  <div className="text-xs text-muted-foreground">{label}</div>
-                </div>
-              );
-            })}
+            {summaryCards.map(({ label, value, Icon }) => (
+              <div key={label} className="rounded-xl border bg-card p-4">
+                <Icon className="h-4 w-4 text-primary" />
+                <div className="mt-3 text-2xl font-semibold">{value}</div>
+                <div className="text-xs text-muted-foreground">{label}</div>
+              </div>
+            ))}
           </div>
           <p className="mt-3 text-xs text-muted-foreground">
             Archive range: {date(insights.earliestTime)} – {date(insights.latestTime)} ·{" "}

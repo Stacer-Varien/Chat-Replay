@@ -8,9 +8,14 @@ import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
 const isVercelBuild = process.env.BUILD_TARGET === "vercel" || process.env.VERCEL === "1";
 const isAndroidBuild = process.env.BUILD_TARGET === "android";
+const isElectronBuild = process.env.BUILD_TARGET === "electron";
 
 export default defineConfig({
-  nitro: isVercelBuild ? { preset: "vercel" } : isAndroidBuild ? false : undefined,
+  nitro: isVercelBuild
+    ? { preset: "vercel" }
+    : isAndroidBuild || isElectronBuild
+      ? false
+      : undefined,
   tanstackStart: {
     ...(isAndroidBuild
       ? {

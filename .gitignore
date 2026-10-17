@@ -18,6 +18,9 @@ android/.gradle/
 android/.idea/
 android/build/
 android/app/build/
+android/keystore.properties
+android/*.keystore
+android/*.jks
 .vinxi
 .tanstack/**
 *.local

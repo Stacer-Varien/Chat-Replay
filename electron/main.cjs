@@ -9,6 +9,7 @@ const { pathToFileURL } = require("node:url");
 const IPC = {
   listBackups: "chat-replay:list-backups",
   loadBackup: "chat-replay:load-backup",
+  loadBackupArchive: "chat-replay:load-backup-archive",
   saveBackup: "chat-replay:save-backup",
   renameBackup: "chat-replay:rename-backup",
   markBackupOpened: "chat-replay:mark-backup-opened",
@@ -317,19 +318,24 @@ async function loadBackup(_event, id) {
     readJson(path.join(dir, "manifest.json")),
     readJson(path.join(dir, "conversations.json")),
   ]);
-  let archiveData = null;
-  try {
-    const archive = await fs.readFile(path.join(dir, manifest.archiveFileName));
-    archiveData = archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength);
-  } catch {
-    // Older or incomplete saved imports can still open without their source archive.
-  }
-
   return {
     backup: summaryFromManifest(manifest),
     conversations,
-    archiveData,
+    report: manifest.report ?? null,
   };
+}
+
+async function loadBackupArchive(_event, id) {
+  const normalized = assertBackupId(id);
+  const dir = backupDir(normalized);
+  const manifest = await readJson(path.join(dir, "manifest.json"));
+  try {
+    const archive = await fs.readFile(path.join(dir, manifest.archiveFileName));
+    return archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength);
+  } catch {
+    // Older or incomplete saved imports can still open without their source archive.
+    return null;
+  }
 }
 
 async function saveBackup(_event, payload) {
@@ -397,6 +403,7 @@ async function saveBackup(_event, payload) {
       sourceSize: finiteNumber(metadata.sourceSize),
       sourceLastModified: finiteNumber(metadata.sourceLastModified),
     },
+    report: payload.report ?? null,
   };
 
   await fs.rm(tempDir, { recursive: true, force: true });
@@ -515,6 +522,7 @@ async function resetLockAndBackups() {
 function registerIpc() {
   ipcMain.handle(IPC.listBackups, listBackups);
   ipcMain.handle(IPC.loadBackup, loadBackup);
+  ipcMain.handle(IPC.loadBackupArchive, loadBackupArchive);
   ipcMain.handle(IPC.saveBackup, saveBackup);
   ipcMain.handle(IPC.renameBackup, renameBackup);
   ipcMain.handle(IPC.markBackupOpened, markBackupOpened);

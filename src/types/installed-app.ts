@@ -1,4 +1,4 @@
-import type { Conversation, ExportBackupMetadata } from "@/lib/chatgpt-import";
+import type { Conversation, ExportBackupMetadata, ImportHealthReport } from "@/lib/chatgpt-import";
 
 export interface InstalledBackupSummary {
   id: string;
@@ -18,7 +18,7 @@ export interface InstalledBackupSummary {
 export interface InstalledBackupPayload {
   backup: InstalledBackupSummary;
   conversations: Conversation[];
-  archiveData: ArrayBuffer | null;
+  report: ImportHealthReport | null;
 }
 
 export interface InstalledSavePayload {
@@ -26,6 +26,7 @@ export interface InstalledSavePayload {
   fileName: string;
   archiveData: ArrayBuffer;
   conversations: Conversation[];
+  report: ImportHealthReport;
   permissionConfirmed: boolean;
   metadata: ExportBackupMetadata;
 }
@@ -45,6 +46,7 @@ export interface InstalledBackupApi {
   platform: "electron" | "android";
   listBackups: () => Promise<InstalledBackupSummary[]>;
   loadBackup: (id: string) => Promise<InstalledBackupPayload>;
+  loadBackupArchive: (id: string) => Promise<ArrayBuffer | null>;
   saveBackup: (payload: InstalledSavePayload) => Promise<InstalledSaveResult>;
   renameBackup: (id: string, displayName: string) => Promise<InstalledBackupSummary>;
   markBackupOpened: (id: string) => Promise<InstalledBackupSummary>;

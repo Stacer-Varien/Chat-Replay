@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld("chatReplayDesktop", {
   platform: "electron",
   listBackups: () => ipcRenderer.invoke("chat-replay:list-backups"),
   loadBackup: (id) => ipcRenderer.invoke("chat-replay:load-backup", id),
+  loadBackupArchive: (id) => ipcRenderer.invoke("chat-replay:load-backup-archive", id),
   saveBackup: (payload) => ipcRenderer.invoke("chat-replay:save-backup", payload),
   renameBackup: (id, displayName) =>
     ipcRenderer.invoke("chat-replay:rename-backup", id, displayName),
