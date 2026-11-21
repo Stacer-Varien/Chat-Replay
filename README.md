@@ -1,6 +1,6 @@
 # Chat Replay
 
-A local-first viewer for ChatGPT, Claude, and Gemini export data. Upload your export ZIP file, browse your conversations, search messages, and review your history without sending your data anywhere else.
+A local-first viewer for ChatGPT, Claude, and Gemini export data. Open your export ZIP file, browse your conversations, search messages, and review your history without uploading the export.
 
 ## What this app does
 
@@ -18,7 +18,7 @@ Chat Replay helps you:
 This app is designed for privacy and convenience:
 
 - all parsing happens on your device
-- nothing is uploaded to a server during normal use
+- exports stay on your device; optional online image lookups send image descriptions to Wikimedia Commons
 - it is suitable for personal archive viewing and offline review
 
 ## Features
@@ -27,6 +27,9 @@ This app is designed for privacy and convenience:
 - Conversation list with quick navigation
 - Search and filtering for titles and messages
 - Markdown rendering for readable chat content
+- Draft cards and safe ChatGPT layouts, including nested boxes, rows, and badges
+- Background import and indexed search, with chats and attachments opened on demand
+- Optional Wikimedia image replacements, downloaded nearby and cached for offline viewing
 - PDF export for the visible conversation view
 - Browser, Vercel, Electron, and Android build support
 
@@ -77,8 +80,8 @@ The desktop and Android commands below select their own build targets automatica
 npm run electron:build
 ```
 
-This produces both `Chat Replay-Setup-1.5.0-x64.exe` and
-`Chat Replay-Portable-1.5.0-x64.exe` in the `release` folder on a Windows x64 build. Code signing
+This produces both `Chat Replay-Setup-1.6.0-x64.exe` and
+`Chat Replay-Portable-1.6.0-x64.exe` in the `release` folder on a Windows x64 build. Code signing
 is recommended before public distribution.
 
 ### Vercel deployment
@@ -124,7 +127,7 @@ For an installable local debug APK:
 npm run android:build
 ```
 
-The APK is written to `android/app/build/outputs/apk/debug/app-debug.apk`.
+The APK is written to `android/app/build/outputs/apk/standard/debug/app-standard-debug.apk`.
 
 For a publishable signed release, copy `android/keystore.properties.example` to
 `android/keystore.properties`, replace all four placeholder values, and keep the keystore outside
@@ -137,8 +140,18 @@ npm run android:build:release
 npm run android:bundle:release
 ```
 
-The signed APK is written to `android/app/build/outputs/apk/release/app-release.apk`; the Android
-App Bundle for Play Store uploads is written to `android/app/build/outputs/bundle/release/app-release.aab`.
+The signed APK is written to `android/app/build/outputs/apk/standard/release/app-standard-release.apk`;
+the Android App Bundle is written to `android/app/build/outputs/bundle/standardRelease/app-standard-release.aab`.
+
+`npm run android:build:preview` builds a separate **Chat Replay Preview** app. Its package is
+`com.chatreplay.viewer.preview`, so it preserves the regular app and its saved collections.
+Only Preview enables WebView inspection for device testing; the standard release does not.
+Both display version 1.6.0. Android version code 171 preserves update compatibility with the
+earlier local Preview builds that used code 170.
+
+On this Windows release machine, `scripts/build-android-release.ps1 -JdkPath <JDK-21-path>`
+builds both signed APKs using the existing key and Windows-encrypted password under
+`%LOCALAPPDATA%\ChatReplay\release-signing`. These files stay outside the repository.
 
 The Android app has the same installed-app backup flow as Electron: imports open temporarily, and
 users can explicitly save named chat collections, reopen them later, replace older copies with a
@@ -149,6 +162,20 @@ attachments need to be restored or a damaged cache needs recovery. Existing Andr
 remain available after the local storage upgrade.
 
 ## Release notes
+
+See [CHANGELOG.md](CHANGELOG.md) for the unpublished 1.6.0 update notes.
+
+### Optional online images
+
+Open **Online images** in the library or conversation menu to enable downloads once. Descriptions
+from missing ChatGPT `<AsyncImage>` tags are sent directly to Wikimedia Commons to find similar
+images; full chats are not uploaded. Results are labelled as replacements with source and licence
+information, and may differ from the original ChatGPT images. Some descriptions have no match.
+
+Only nearby images download, with two jobs at a time. Images are cached on the device for offline
+viewing, up to 100 MiB, with older unused entries removed as needed. Turning downloads off keeps
+cached images. **Clear cache and turn off** removes them. PDF export uses already cached images
+without downloading more. No account, API key or image proxy is required.
 
 When publishing GitHub Releases, you can include both:
 

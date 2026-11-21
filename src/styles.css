@@ -4,6 +4,178 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* The reader uses quiet navy surfaces, teal actions, and generous text spacing. */
+html:root {
+  --background: #f7f9fc;
+  --foreground: #18263b;
+  --card: #fff;
+  --card-foreground: #18263b;
+  --popover: #fff;
+  --popover-foreground: #18263b;
+  --primary: #087f75;
+  --primary-foreground: #fff;
+  --muted: #edf2f7;
+  --muted-foreground: #5d6d83;
+  --accent: #e5edf5;
+  --border: #dce4ee;
+  --input: #dce4ee;
+  --sidebar: #eef3f8;
+  --sidebar-foreground: #26364c;
+  --sidebar-accent: #dce8ef;
+  --sidebar-accent-foreground: #153d43;
+  --user-bubble: #e9f0f5;
+  --user-bubble-foreground: #21384a;
+}
+html.dark {
+  --background: #101a28;
+  --foreground: #eaf0f9;
+  --card: #182538;
+  --card-foreground: #eaf0f9;
+  --popover: #1b2a3e;
+  --popover-foreground: #eaf0f9;
+  --primary: #4bd1b4;
+  --primary-foreground: #082c28;
+  --muted: #1b2b3f;
+  --muted-foreground: #a5b4c8;
+  --accent: #24374c;
+  --border: #2a3c52;
+  --input: #2a3c52;
+  --sidebar: #0d1623;
+  --sidebar-foreground: #dce7f5;
+  --sidebar-accent: #1b3842;
+  --sidebar-accent-foreground: #d9fff5;
+  --user-bubble: #1d3846;
+  --user-bubble-foreground: #e1f6f8;
+}
+.rich-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin: 0.8rem 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.rich-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin: 0.6rem 0;
+}
+.rich-row > .rich-box,
+.rich-row > .rich-text {
+  flex: 1 1 9rem;
+}
+.rich-grid {
+  display: grid;
+  gap: 0.8rem;
+  margin: 0.8rem 0;
+}
+.rich-grid > * {
+  min-width: 0;
+}
+.rich-title {
+  font-weight: 650;
+  font-size: 1.25rem;
+  line-height: 1.35;
+}
+.rich-title .md-body p {
+  margin: 0;
+}
+.rich-box .md-body,
+.rich-text .md-body,
+.rich-title .md-body,
+.rich-badge .md-body,
+.rich-caption .md-body {
+  color: inherit;
+  font-size: inherit;
+}
+.md-body {
+  font-size: 1rem;
+  line-height: 1.75;
+}
+.rich-caption {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+.rich-badge {
+  color: var(--foreground);
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  background: var(--muted);
+  font-size: 0.85rem;
+}
+.rich-badge .md-body p {
+  margin: 0;
+}
+.rich-image-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  margin: 0.5rem 0;
+  border: 1px dashed var(--border);
+  border-radius: 0.8rem;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  min-width: 0;
+  max-width: 100%;
+}
+.rich-image-placeholder figcaption {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+.rich-image-placeholder small {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+}
+.rich-citation {
+  display: inline;
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+  padding: 0 0.2rem;
+}
+.rich-readonly {
+  display: inline-flex;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--muted-foreground);
+}
+.rich-list {
+  padding-left: 1.3rem;
+  list-style: disc;
+}
+.continue-reading {
+  background: linear-gradient(110deg, var(--card), var(--accent));
+}
+.reader-menu summary::-webkit-details-marker {
+  display: none;
+}
+.reader-menu[open] summary {
+  background: var(--accent);
+}
+@media (max-width: 640px) {
+  .rich-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .rich-row {
+    flex-direction: column;
+  }
+  .rich-row > * {
+    width: 100% !important;
+    flex-basis: auto !important;
+  }
+  .rich-row > .rich-badge {
+    width: auto !important;
+    align-self: flex-start;
+  }
+}
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);

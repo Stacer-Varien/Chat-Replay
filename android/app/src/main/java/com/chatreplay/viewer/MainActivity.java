@@ -3,6 +3,7 @@ package com.chatreplay.viewer;
 import android.os.Bundle;
 import android.view.View;
 import androidx.core.graphics.Insets;
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import com.getcapacitor.BridgeActivity;
@@ -14,6 +15,24 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativePrintPlugin.class);
         registerPlugin(NativeAuthPlugin.class);
         super.onCreate(savedInstanceState);
+        if (getPackageName().endsWith(".preview")) {
+            android.webkit.WebView.setWebContentsDebuggingEnabled(true);
+        }
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                getBridge().getWebView().evaluateJavascript(
+                    "Boolean(window.chatReplayBack && window.chatReplayBack())",
+                    handled -> {
+                        if (!"true".equals(handled)) {
+                            setEnabled(false);
+                            getOnBackPressedDispatcher().onBackPressed();
+                            setEnabled(true);
+                        }
+                    }
+                );
+            }
+        });
 
         View webViewContainer = (View) getBridge().getWebView().getParent();
         ViewCompat.setOnApplyWindowInsetsListener(webViewContainer, (view, windowInsets) -> {

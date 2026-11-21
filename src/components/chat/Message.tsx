@@ -1,13 +1,16 @@
-import { useState } from "react";
+import { memo, useEffect, useState } from "react";
+import { resolveAttachment } from "@/lib/collection-session";
 import type { ChainItem, MessageAttachment } from "@/lib/chatgpt-import";
 import { User, Sparkles, ChevronLeft, ChevronRight, FileText, Download, X } from "lucide-react";
-import { Markdown } from "./Markdown";
+import { AssistantMarkdown, Markdown } from "./Markdown";
 
 interface Props {
   item: ChainItem;
   onPrev: () => void;
   onNext: () => void;
   highlighted?: boolean;
+  continuation?: boolean;
+  hideBranches?: boolean;
 }
 
 function formatBytes(size: number | null) {
@@ -106,24 +109,63 @@ function AttachmentPreview({
   );
 }
 
-export function Message({ item, onPrev, onNext, highlighted = false }: Props) {
+export const Message = memo(function Message({
+  item,
+  onPrev,
+  onNext,
+  highlighted = false,
+  continuation = false,
+  hideBranches = false,
+}: Props) {
   const { node, index, total } = item;
   const isUser = node.role === "user";
-  const hasBranches = total > 1;
-  const attachments = node.attachments ?? [];
+  const hasBranches = total > 1 && !hideBranches;
+  const [attachments, setAttachments] = useState(node.attachments ?? []);
+  useEffect(() => {
+    let disposed = false;
+    setAttachments(node.attachments ?? []);
+    for (const attachment of node.attachments ?? [])
+      if (attachment.url?.startsWith("asset:")) {
+        void resolveAttachment(attachment.url)
+          .then((url) => {
+            if (!disposed)
+              setAttachments((items) => items.map((a) => (a === attachment ? { ...a, url } : a)));
+          })
+          .catch(() => {
+            if (!disposed)
+              setAttachments((items) =>
+                items.map((a) =>
+                  a === attachment
+                    ? {
+                        ...a,
+                        url: null,
+                        unavailableReason:
+                          "Could not restore this file. Reopen the source export to try again.",
+                      }
+                    : a,
+                ),
+              );
+          });
+      }
+    return () => {
+      disposed = true;
+    };
+  }, [node]);
   const [previewAttachment, setPreviewAttachment] = useState<MessageAttachment | null>(null);
 
   return (
     <div
-      id={`message-${node.id}`}
+      id={continuation ? undefined : `message-${node.id}`}
       className={`w-full min-w-0 overflow-hidden transition-colors ${
         highlighted ? "bg-primary/10" : ""
       }`}
     >
-      <div className="mx-auto w-full max-w-3xl min-w-0 px-3 py-4 sm:px-4">
+      <div className="mx-auto w-full max-w-3xl min-w-0 px-4 py-4 sm:px-6">
         <div className={`flex min-w-0 gap-2 sm:gap-4 ${isUser ? "justify-end" : "justify-start"}`}>
           {!isUser && (
-            <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground sm:h-8 sm:w-8">
+            <div
+              className={`mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground sm:h-8 sm:w-8 ${continuation ? "invisible" : ""}`}
+            >
               <Sparkles className="h-4 w-4" />
             </div>
           )}
@@ -148,11 +190,23 @@ export function Message({ item, onPrev, onNext, highlighted = false }: Props) {
                   </div>
                 ) : null
               ) : node.text ? (
-                <Markdown>{node.text}</Markdown>
+                node.role === "assistant" ? (
+                  <AssistantMarkdown key={node.id} attachments={attachments}>
+                    {node.text}
+                  </AssistantMarkdown>
+                ) : (
+                  <Markdown>{node.text}</Markdown>
+                )
               ) : null}
               {attachments.length > 0 && (
                 <div className={node.text ? "mt-3 space-y-2" : "space-y-2"}>
                   {attachments.map((attachment) => {
+                    if (attachment.url?.startsWith("asset:"))
+                      return (
+                        <div key={attachment.id} className="rich-image-placeholder" role="status">
+                          Preparing {attachment.name}…
+                        </div>
+                      );
                     if (attachment.isImage && attachment.url) {
                       return (
                         <button
@@ -165,6 +219,8 @@ export function Message({ item, onPrev, onNext, highlighted = false }: Props) {
                             src={attachment.url}
                             alt={attachment.name}
                             className="max-h-80 max-w-full object-contain"
+                            loading="lazy"
+                            decoding="async"
                           />
                           <span className="flex min-w-0 items-center justify-between gap-2 border-t px-3 py-2 text-xs">
                             <span className="min-w-0 flex-1 truncate">{attachment.name}</span>
@@ -294,4 +350,4 @@ export function Message({ item, onPrev, onNext, highlighted = false }: Props) {
       )}
     </div>
   );
-}
+});

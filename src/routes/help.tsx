@@ -117,7 +117,9 @@ function Help() {
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Chat Replay help</h1>
           <p className="mt-3 text-sm leading-6 text-muted-foreground sm:text-base">
             Import an AI chat export and read it in a clean, familiar conversation layout. Chat
-            Replay processes the file on your device, so nothing gets uploaded to the server.
+            Replay processes the file on your device without uploading the export. If you enable
+            online images, missing image descriptions are sent to Wikimedia Commons to find
+            replacements.
           </p>
         </section>
 

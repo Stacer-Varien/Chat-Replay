@@ -1,25 +1,19 @@
 import type { Conversation } from "@/lib/chatgpt-import";
-import { searchConversations, type SearchHit, type SearchMode } from "@/lib/chat-search";
+import { type SearchMode } from "@/lib/chat-search";
+import { useArchiveSearch } from "@/lib/use-archive-search";
 import { CopyrightLabel } from "@/components/CopyrightLabel";
 import { cn } from "@/lib/utils";
-import {
-  GitBranch,
-  MessageSquare,
-  Upload,
-  Search,
-  Trash2,
-  SlidersHorizontal,
-  X,
-} from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowLeft, GitBranch, MessageSquare, Search, SlidersHorizontal, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { VirtualList } from "./VirtualList";
 
 interface Props {
   conversations: Conversation[];
   activeId: string | null;
   selections: Record<string, Record<string, number>>;
   onSelect: (id: string, selection?: Record<string, number>, nodeId?: string | null) => void;
-  onReimport: () => void;
-  onClear: () => void;
+  onCloseArchive: () => void;
+  closeArchiveLabel: string;
   onOpenDashboard?: () => void;
   onRequestClose?: () => void;
   className?: string;
@@ -39,8 +33,8 @@ export function Sidebar({
   activeId,
   selections,
   onSelect,
-  onReimport,
-  onClear,
+  onCloseArchive,
+  closeArchiveLabel,
   onOpenDashboard,
   onRequestClose,
   className,
@@ -51,29 +45,47 @@ export function Sidebar({
   const [dateTo, setDateTo] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [searchMode, setSearchMode] = useState<SearchMode>("visible");
+  const [resultLimit, setResultLimit] = useState(100);
+  useEffect(() => setResultLimit(100), [q, author, dateFrom, dateTo, searchMode]);
+  const searchInput = useRef<HTMLInputElement>(null);
 
-  const hasFilters = author !== "all" || dateFrom !== "" || dateTo !== "";
-  const isSearching = q.trim() !== "" || hasFilters;
+  const activeFilters = [
+    author === "user" ? "Your messages" : null,
+    author === "assistant" ? "Assistant replies" : null,
+    dateFrom ? `From ${dateFrom}` : null,
+    dateTo ? `To ${dateTo}` : null,
+    searchMode === "all-variants" ? "All versions" : null,
+  ].filter((label) => label !== null);
+  const hasFilters = activeFilters.length > 0;
+  const isSearching = q.trim() !== "" || author !== "all" || dateFrom !== "" || dateTo !== "";
 
-  const searchHits = useMemo<SearchHit[]>(() => {
+  const searchOptions = useMemo(() => {
     const query = q.trim();
     const fromTs = dateInputToTs(dateFrom, false);
     const toTs = dateInputToTs(dateTo, true);
-    if (!isSearching) return [];
-    return searchConversations(conversations, {
+    return {
       query,
       mode: searchMode,
       author,
       fromTs,
       toTs,
       selections,
-    });
-  }, [q, author, dateFrom, dateTo, conversations, isSearching, searchMode, selections]);
+      maxResults: resultLimit,
+    };
+  }, [q, author, dateFrom, dateTo, searchMode, selections, resultLimit]);
+  const {
+    hits: searchHits,
+    ready: searchReady,
+    searching,
+  } = useArchiveSearch(conversations, searchOptions, isSearching);
+  const noMatches = isSearching && searchReady && !searching && searchHits.length === 0;
 
   function resetFilters() {
     setAuthor("all");
     setDateFrom("");
     setDateTo("");
+    setSearchMode("visible");
+    searchInput.current?.focus();
   }
 
   return (
@@ -87,9 +99,7 @@ export function Sidebar({
       }}
     >
       <div className="flex items-center gap-2 px-3 py-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-semibold">
-          C
-        </div>
+        <img src="/icon.png" alt="" className="h-9 w-9 rounded-xl" />
         <div className="min-w-0 flex-1 truncate text-sm font-semibold">Chat Replay</div>
         {onRequestClose && (
           <button
@@ -105,11 +115,12 @@ export function Sidebar({
 
       <div className="px-3">
         <button
-          onClick={onReimport}
+          type="button"
+          onClick={onCloseArchive}
           className="flex w-full items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-sidebar-accent transition-colors"
         >
-          <Upload className="h-4 w-4" />
-          Import new export
+          <ArrowLeft className="h-4 w-4" />
+          {closeArchiveLabel}
         </button>
         {onOpenDashboard && (
           <button
@@ -118,7 +129,7 @@ export function Sidebar({
             className="mt-2 flex w-full items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors hover:bg-sidebar-accent"
           >
             <MessageSquare className="h-4 w-4" />
-            Archive dashboard
+            Collection details
           </button>
         )}
       </div>
@@ -127,13 +138,16 @@ export function Sidebar({
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
+            ref={searchInput}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search messages & titles"
+            aria-label="Search messages and titles"
             className="w-full rounded-md border bg-background py-2 pl-8 pr-8 text-sm outline-none focus:ring-2 focus:ring-ring"
           />
           {q && (
             <button
+              type="button"
               onClick={() => setQ("")}
               aria-label="Clear search"
               className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent"
@@ -142,45 +156,42 @@ export function Sidebar({
             </button>
           )}
         </div>
-        <p className="px-0.5 text-[11px] leading-4 text-muted-foreground">
-          Use quotes for a phrase, <code>OR</code> for alternatives, or <code>-word</code> to
-          exclude.
-        </p>
-
-        <button
-          onClick={() => setShowFilters((v) => !v)}
-          className={`flex w-full items-center justify-between rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
-            hasFilters
-              ? "border-primary/40 bg-primary/5 text-foreground"
-              : "hover:bg-sidebar-accent"
-          }`}
-        >
-          <span className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            aria-expanded={showFilters}
+            onClick={() => setShowFilters((v) => !v)}
+            className={`flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+              hasFilters
+                ? "border-primary/40 bg-primary/5 text-foreground"
+                : "hover:bg-sidebar-accent"
+            }`}
+          >
             <SlidersHorizontal className="h-3.5 w-3.5" />
             Filters
-            {hasFilters && (
-              <span className="rounded-full bg-primary px-1.5 text-[10px] font-medium text-primary-foreground">
-                on
-              </span>
-            )}
-          </span>
-          {hasFilters && (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={(e) => {
-                e.stopPropagation();
-                resetFilters();
-              }}
-              className="text-muted-foreground hover:text-foreground"
+          </button>
+          {hasFilters && !noMatches && (
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="shrink-0 px-1 py-1.5 text-xs text-primary underline underline-offset-2"
             >
-              reset
-            </span>
+              Clear filters
+            </button>
           )}
-        </button>
+        </div>
+        {hasFilters && (
+          <ul aria-label="Active filters" className="flex flex-wrap gap-1.5">
+            {activeFilters.map((label) => (
+              <li key={label} className="rounded-full border bg-muted px-2 py-0.5 text-xs">
+                {label}
+              </li>
+            ))}
+          </ul>
+        )}
 
         {showFilters && (
-          <div className="space-y-2 rounded-md border bg-background/50 p-2.5">
+          <div className="max-h-[40dvh] space-y-2 overflow-y-auto rounded-md border bg-background/50 p-2.5">
             <div>
               <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 Search scope
@@ -190,6 +201,7 @@ export function Sidebar({
                   <button
                     key={mode}
                     type="button"
+                    aria-pressed={searchMode === mode}
                     onClick={() => setSearchMode(mode)}
                     className={`rounded px-2 py-1 text-xs transition-colors ${
                       searchMode === mode
@@ -197,7 +209,7 @@ export function Sidebar({
                         : "border hover:bg-sidebar-accent"
                     }`}
                   >
-                    {mode === "visible" ? "Visible" : "All variants"}
+                    {mode === "visible" ? "Visible" : "All versions"}
                   </button>
                 ))}
               </div>
@@ -215,6 +227,8 @@ export function Sidebar({
                 {(["all", "user", "assistant"] as const).map((opt) => (
                   <button
                     key={opt}
+                    type="button"
+                    aria-pressed={author === opt}
                     onClick={() => setAuthor(opt)}
                     className={`flex-1 rounded px-2 py-1 text-xs capitalize transition-colors ${
                       author === opt
@@ -222,46 +236,54 @@ export function Sidebar({
                         : "border hover:bg-sidebar-accent"
                     }`}
                   >
-                    {opt}
+                    {opt === "all" ? "Any" : opt === "user" ? "You" : "Assistant"}
                   </button>
                 ))}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <label className="min-w-0">
+                <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   From
-                </label>
+                </span>
                 <input
                   type="date"
                   value={dateFrom}
                   onChange={(e) => setDateFrom(e.target.value)}
                   className="w-full rounded border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-ring"
                 />
-              </div>
-              <div>
-                <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              </label>
+              <label className="min-w-0">
+                <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   To
-                </label>
+                </span>
                 <input
                   type="date"
                   value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
                   className="w-full rounded border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-ring"
                 />
-              </div>
+              </label>
             </div>
+            <p className="text-[11px] leading-4 text-muted-foreground">
+              Use quotes for a phrase, <code>OR</code> for alternatives, or <code>-word</code> to
+              exclude.
+            </p>
           </div>
         )}
       </div>
 
-      <div className="mt-3 flex-1 overflow-y-auto px-2 pb-3">
+      <div className="mt-3 flex min-h-0 flex-1 flex-col px-2 pb-3">
         <div className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {isSearching
-            ? `${searchHits.length} result${searchHits.length === 1 ? "" : "s"}`
+            ? !searchReady
+              ? "Preparing search…"
+              : searching
+                ? "Searching…"
+                : `${searchHits.length}${searchHits.length >= resultLimit ? "+" : ""} result${searchHits.length === 1 ? "" : "s"}`
             : `${conversations.length} chat${conversations.length === 1 ? "" : "s"}`}
         </div>
-        <ul className="space-y-0.5">
+        <VirtualList>
           {!isSearching &&
             conversations.map((convo) => {
               const dateLabel = convo.updateTime
@@ -279,7 +301,9 @@ export function Sidebar({
                   >
                     <div className="flex items-center gap-2">
                       <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <span className="flex-1 truncate">{convo.title}</span>
+                      <span className="flex-1 truncate" title={convo.title}>
+                        {convo.title.replace(/^(?:Branch\s*·\s*)+/i, "")}
+                      </span>
                       {(convo.branchChildren?.length || convo.branchSourceId) && (
                         <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       )}
@@ -294,6 +318,8 @@ export function Sidebar({
               );
             })}
           {isSearching &&
+            searchReady &&
+            !searching &&
             searchHits.map((hit) => {
               return (
                 <li key={hit.key}>
@@ -333,12 +359,32 @@ export function Sidebar({
                 </li>
               );
             })}
-          {isSearching && searchHits.length === 0 && (
+          {noMatches && (
             <li className="px-3 py-6 text-center text-xs text-muted-foreground">
-              No matches. Try a different keyword or reset filters.
+              <p>
+                {hasFilters ? "No matches with these filters." : "No matches. Try another keyword."}
+              </p>
+              {hasFilters && (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="mt-2 rounded-md border px-3 py-1.5 font-medium text-primary hover:bg-sidebar-accent"
+                >
+                  Clear filters
+                </button>
+              )}
             </li>
           )}
-        </ul>
+        </VirtualList>
+        {isSearching && searchHits.length >= resultLimit && !searching && (
+          <button
+            type="button"
+            onClick={() => setResultLimit((limit) => limit + 100)}
+            className="my-2 rounded-xl border px-3 py-2 text-sm hover:bg-accent"
+          >
+            Show more results
+          </button>
+        )}
       </div>
 
       <div
@@ -347,16 +393,7 @@ export function Sidebar({
           paddingBottom: "var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))",
         }}
       >
-        <button
-          onClick={onClear}
-          className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-foreground transition-colors"
-        >
-          <Trash2 className="h-4 w-4" />
-          Clear archive
-        </button>
-        <div className="mt-3 px-3">
-          <CopyrightLabel />
-        </div>
+        <CopyrightLabel />
       </div>
     </aside>
   );

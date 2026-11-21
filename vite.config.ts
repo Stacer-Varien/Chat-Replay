@@ -5,12 +5,22 @@
 //     error logger plugins, and sandbox detection (port/host/strictPort).
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+import { fileURLToPath } from "node:url";
 
 const isVercelBuild = process.env.BUILD_TARGET === "vercel" || process.env.VERCEL === "1";
 const isAndroidBuild = process.env.BUILD_TARGET === "android";
 const isElectronBuild = process.env.BUILD_TARGET === "electron";
 
 export default defineConfig({
+  vite: {
+    resolve: {
+      alias: {
+        "decode-named-character-reference": fileURLToPath(
+          new URL("./node_modules/decode-named-character-reference/index.js", import.meta.url),
+        ),
+      },
+    },
+  },
   nitro: isVercelBuild
     ? { preset: "vercel" }
     : isAndroidBuild || isElectronBuild

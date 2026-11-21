@@ -5,14 +5,22 @@ import { LockGate } from "@/components/chat/LockGate";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { ConversationView } from "@/components/chat/ConversationView";
 import { ArchiveDashboard } from "@/components/chat/ArchiveDashboard";
+import { OnlineImageSettingsProvider } from "@/components/chat/OnlineImageSettings";
+import { clearOnlineImageCache, stopOnlineImageRequests } from "@/lib/online-images";
 import {
   computeChain,
   parseChatGPTExportWithMetadata,
+  releaseConversationAssets,
   type Conversation,
   type ImportHealthReport,
   type ParsedChatGPTExport,
 } from "@/lib/chatgpt-import";
 import { getInstalledBackupApi } from "@/lib/installed-backups";
+import {
+  getCollection,
+  openSavedCollection,
+  type CollectionSession,
+} from "@/lib/collection-session";
 import type {
   InstalledBackupApi,
   InstalledBackupPayload,
@@ -27,13 +35,13 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Browse supported ChatGPT, OpenAI, Claude, and Gemini exports locally in your browser. Nothing gets uploaded to the server.",
+          "Browse ChatGPT, OpenAI, Claude, and Gemini exports locally. Exports stay on your device; optional image lookups use Wikimedia Commons.",
       },
       { property: "og:title", content: "Chat Replay" },
       {
         property: "og:description",
         content:
-          "Browse exported ChatGPT, Claude, and Gemini history locally in your browser. Nothing gets uploaded to the server.",
+          "Browse exported chats locally. Exports stay on your device; optional image lookups use Wikimedia Commons.",
       },
     ],
   }),
@@ -44,37 +52,14 @@ type ImportedFile = ParsedChatGPTExport & {
   file: File;
 };
 
-function hasRenderableAssistantMessages(conversations: Conversation[]) {
-  return conversations.some((conversation) =>
-    computeChain(conversation, {}).some((item) => item.node.role === "assistant"),
-  );
-}
-
-function needsAttachmentRestore(loaded: InstalledBackupPayload): boolean {
-  if (loaded.report) return loaded.report.availableAttachmentCount > 0;
-  return loaded.conversations.some((conversation) =>
-    Object.values(conversation.nodes).some((node) =>
-      node.attachments?.some((attachment) => !attachment.unavailableReason),
-    ),
-  );
-}
-
-async function restoreInstalledConversations(
-  api: InstalledBackupApi,
-  loaded: InstalledBackupPayload,
-): Promise<ParsedChatGPTExport | null> {
-  try {
-    const archiveData = await api.loadBackupArchive(loaded.backup.id);
-    if (!archiveData) return null;
-    const source = new File([archiveData], loaded.backup.originalFileName);
-    const parsed = await parseChatGPTExportWithMetadata(source);
-    return hasRenderableAssistantMessages(parsed.conversations) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 function Index() {
+  return (
+    <OnlineImageSettingsProvider>
+      <ArchiveApp />
+    </OnlineImageSettingsProvider>
+  );
+}
+function ArchiveApp() {
   const [conversations, setConversations] = useState<Conversation[] | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -82,8 +67,12 @@ function Index() {
   const [installedApi, setInstalledApi] = useState<InstalledBackupApi | null>(null);
   const [savedBackups, setSavedBackups] = useState<InstalledBackupSummary[]>([]);
   const [activeBackup, setActiveBackup] = useState<InstalledBackupSummary | null>(null);
+  const [isSample, setIsSample] = useState(false);
   const [pendingImport, setPendingImport] = useState<ImportedFile | null>(null);
   const [activeReport, setActiveReport] = useState<ImportHealthReport | null>(null);
+  const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+  const [dashboardConversations, setDashboardConversations] = useState<Conversation[]>([]);
+  const sessionRef = useRef<CollectionSession | null>(null);
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
@@ -95,20 +84,110 @@ function Index() {
   const [appUnlocked, setAppUnlocked] = useState(true);
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const loadGeneration = useRef(0);
+  const backupLoad = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const native = window as Window & { chatReplayBack?: () => boolean };
+    native.chatReplayBack = () => {
+      const attachment = document.querySelector<HTMLButtonElement>(
+        'button[aria-label="Close attachment"]',
+      );
+      if (attachment) {
+        attachment.click();
+        return true;
+      }
+      if (document.querySelector("[data-online-image-settings]")) {
+        window.dispatchEvent(new Event("chat-replay:close-image-settings"));
+        return true;
+      }
+      const menu = document.querySelector("details[open]");
+      if (menu) {
+        menu.removeAttribute("open");
+        return true;
+      }
+      if (saveDialogOpen) {
+        setSaveDialogOpen(false);
+        return true;
+      }
+      if (mobileSidebarOpen) {
+        setMobileSidebarOpen(false);
+        return true;
+      }
+      if (dashboardOpen) {
+        setDashboardOpen(false);
+        return true;
+      }
+      if (conversations) {
+        handleCloseArchive();
+        return true;
+      }
+      return false;
+    };
+    return () => {
+      delete native.chatReplayBack;
+    };
+  });
 
-  const showInstalledHome = useCallback(() => {
+  const invalidateLoad = useCallback(() => {
     loadGeneration.current += 1;
+    backupLoad.current?.abort();
+    backupLoad.current = null;
+    return loadGeneration.current;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      invalidateLoad();
+    };
+  }, [invalidateLoad]);
+
+  useEffect(() => {
+    return () => {
+      if (conversations) {
+        releaseConversationAssets(conversations);
+        stopOnlineImageRequests();
+      }
+    };
+  }, [conversations]);
+
+  const closeArchive = useCallback(() => {
+    stopOnlineImageRequests();
+    invalidateLoad();
     setConversations(null);
     setActiveId(null);
     setActiveBackup(null);
+    setIsSample(false);
     setPendingImport(null);
     setActiveReport(null);
+    setActiveConversation(null);
+    sessionRef.current?.close();
+    sessionRef.current = null;
     setImportStatus(null);
     setSaveDialogOpen(false);
+    setSaveName("");
+    setSavePermissionConfirmed(false);
     setFocusNodeId(null);
     setMobileSidebarOpen(false);
     setDashboardOpen(false);
-  }, []);
+  }, [invalidateLoad]);
+
+  useEffect(() => {
+    if (!activeId || !conversations) return;
+    let disposed = false;
+    setActiveConversation(null);
+    const session = sessionRef.current;
+    void session
+      ?.getConversation(activeId)
+      .then((conversation) => {
+        if (!disposed) setActiveConversation(conversation);
+      })
+      .catch((error) => {
+        if (!disposed)
+          setImportStatus(error instanceof Error ? error.message : "Could not open this chat.");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [activeId, conversations]);
 
   useEffect(() => {
     let cancelled = false;
@@ -157,28 +236,51 @@ function Index() {
     const api = installedApi;
     if (!api) return;
 
-    const generation = ++loadGeneration.current;
+    const generation = invalidateLoad();
+    const controller = new AbortController();
+    backupLoad.current = controller;
     setImportStatus(null);
     try {
       const loaded = await api.loadBackup(id);
       if (generation !== loadGeneration.current) return;
 
-      let restored = loaded.conversations;
-      let report = loaded.report;
-      let parsedArchive = false;
-      if (!hasRenderableAssistantMessages(restored)) {
-        const parsed = await restoreInstalledConversations(api, loaded);
-        if (!parsed) throw new Error("This saved backup has no readable assistant messages.");
-        restored = parsed.conversations;
-        report = parsed.report;
-        parsedArchive = true;
+      const restored = loaded.conversations,
+        report = loaded.report;
+      const session = await openSavedCollection(
+        restored,
+        loaded.searchIndex,
+        (conversationId) => api.loadConversation(id, conversationId),
+        async () => {
+          const archive = await api.loadBackupArchive(id);
+          return archive ? new File([archive], loaded.backup.originalFileName) : null;
+        },
+        async (index) => api.saveSearchIndex(id, index),
+      );
+      if (generation !== loadGeneration.current) {
+        session.close();
+        return;
       }
+      sessionRef.current = session;
       if (generation !== loadGeneration.current) return;
       setConversations(restored);
-      setActiveId(restored[0]?.id ?? null);
+      let remembered: { id?: string; selection?: Record<string, number> } = {};
+      try {
+        remembered = JSON.parse(localStorage.getItem(`chat-replay-view:${id}`) ?? "{}");
+      } catch {
+        /* A damaged reading position does not prevent opening the collection. */
+      }
+      setActiveId(
+        restored.some((c) => c.id === remembered.id) ? remembered.id! : (restored[0]?.id ?? null),
+      );
+      if (remembered.id && remembered.selection)
+        setSelections((prev) => ({ ...prev, [remembered.id!]: remembered.selection! }));
       setActiveBackup(loaded.backup);
+      setIsSample(false);
       setActiveReport(report);
       setPendingImport(null);
+      setSaveDialogOpen(false);
+      setSaveName("");
+      setSavePermissionConfirmed(false);
       setFocusNodeId(null);
       setMobileSidebarOpen(false);
 
@@ -191,17 +293,6 @@ function Index() {
           setSavedBackups(backups);
         })
         .catch((error) => console.error("Could not update last-opened time", error));
-
-      if (!parsedArchive && needsAttachmentRestore(loaded)) {
-        setTimeout(() => {
-          if (generation !== loadGeneration.current) return;
-          void restoreInstalledConversations(api, loaded).then((parsed) => {
-            if (!parsed || generation !== loadGeneration.current) return;
-            setConversations(parsed.conversations);
-            setActiveReport(parsed.report);
-          });
-        }, 0);
-      }
     } catch (e) {
       if (generation === loadGeneration.current) {
         setImportStatus(e instanceof Error ? e.message : "Failed to open saved backup.");
@@ -209,18 +300,17 @@ function Index() {
     }
   }
 
-  async function handleLoaded(imported: ImportedFile) {
-    loadGeneration.current += 1;
+  function handleLoaded(imported: ParsedChatGPTExport, file: File | null) {
+    invalidateLoad();
     setImportStatus(null);
+    sessionRef.current = imported.session ?? getCollection(imported.conversations) ?? null;
     setConversations(imported.conversations);
     setActiveId(imported.conversations[0]?.id ?? null);
     setActiveBackup(null);
+    setIsSample(file === null);
     setActiveReport(imported.report);
-    setPendingImport(installedApi ? imported : null);
+    setPendingImport(installedApi && file ? { ...imported, file } : null);
     setFocusNodeId(null);
-    if (installedApi) {
-      setImportStatus("Imported temporarily. Choose Save chats to keep this collection.");
-    }
   }
 
   async function renameSavedBackup(id: string, displayName: string) {
@@ -232,7 +322,6 @@ function Index() {
   async function deleteSavedBackup(id: string) {
     await installedApi?.deleteBackup(id);
     await refreshSavedBackups();
-    if (activeBackup?.id === id) showInstalledHome();
   }
 
   async function unlockApp(passcode: string) {
@@ -259,10 +348,11 @@ function Index() {
 
   async function resetLockAndBackups() {
     await installedApi?.resetLockAndBackups();
+    await clearOnlineImageCache();
     setSavedBackups([]);
     setLockState((await refreshLockState()) ?? null);
     setAppUnlocked(true);
-    showInstalledHome();
+    closeArchive();
   }
 
   async function savePendingImport() {
@@ -276,23 +366,26 @@ function Index() {
         displayName: saveName,
         fileName: pendingImport.file.name,
         archiveData: await pendingImport.file.arrayBuffer(),
-        conversations: pendingImport.conversations,
+        conversations: await sessionRef.current!.all(),
         report: pendingImport.report,
+        searchIndex: await sessionRef.current!.index(),
         permissionConfirmed: savePermissionConfirmed,
         metadata: pendingImport.metadata,
       });
       await refreshSavedBackups();
+      if (result.action === "kept-existing") {
+        await loadSavedBackup(result.backup.id);
+        return;
+      }
       setActiveBackup(result.backup);
       setPendingImport(null);
       setSaveDialogOpen(false);
       setSaveName("");
       setSavePermissionConfirmed(false);
       setImportStatus(
-        result.action === "kept-existing"
-          ? `"${result.backup.displayName}" was already saved with an equal or newer export.`
-          : result.action === "replaced"
-            ? `"${result.backup.displayName}" was updated with the newer export.`
-            : `"${result.backup.displayName}" was saved in the installed app.`,
+        result.action === "replaced"
+          ? `"${result.backup.displayName}" was updated with the newer export.`
+          : `"${result.backup.displayName}" was saved in the installed app.`,
       );
     } catch (e) {
       setImportStatus(e instanceof Error ? e.message : "Failed to save chats.");
@@ -301,42 +394,18 @@ function Index() {
     }
   }
 
-  async function handleClear() {
-    const api = installedApi;
-    if (api && activeBackup) {
-      if (!confirm(`Remove "${activeBackup.displayName}" from this installed app?`)) return;
-      loadGeneration.current += 1;
-      await api.deleteBackup(activeBackup.id);
-      await refreshSavedBackups();
-      setConversations(null);
-      setActiveId(null);
-      setActiveBackup(null);
-      setMobileSidebarOpen(false);
-      return;
-    }
-
-    if (!confirm("Close the currently imported conversations?")) return;
-    loadGeneration.current += 1;
-    setConversations(null);
-    setActiveId(null);
-    setActiveBackup(null);
-    setPendingImport(null);
-    setActiveReport(null);
-    setMobileSidebarOpen(false);
+  function handleCloseArchive() {
+    if (saving) return;
+    if (pendingImport && !confirm("Return to the library without saving this collection?")) return;
+    closeArchive();
   }
 
-  function handleReimport() {
-    loadGeneration.current += 1;
-    setConversations(null);
-    setActiveBackup(null);
-    setPendingImport(null);
-    setActiveReport(null);
-    setImportStatus(null);
-    setFocusNodeId(null);
-    setMobileSidebarOpen(false);
-  }
-
-  function handleSelect(id: string, selection?: Record<string, number>, nodeId?: string | null) {
+  async function handleSelect(
+    id: string,
+    selection?: Record<string, number>,
+    nodeId?: string | null,
+  ) {
+    if (nodeId && sessionRef.current) selection = await sessionRef.current.resolve(id, nodeId);
     setActiveId(id);
     if (selection) {
       setSelections((prev) => ({ ...prev, [id]: selection }));
@@ -344,6 +413,15 @@ function Index() {
     setFocusNodeId(nodeId ?? null);
     setMobileSidebarOpen(false);
     setDashboardOpen(false);
+    if (activeBackup)
+      try {
+        localStorage.setItem(
+          `chat-replay-view:${activeBackup.id}`,
+          JSON.stringify({ id, selection: selection ?? selections[id] ?? {} }),
+        );
+      } catch {
+        /* Reading position is optional when local storage is unavailable. */
+      }
   }
 
   if (!hydrated) return null;
@@ -383,7 +461,11 @@ function Index() {
     );
   }
 
-  const active = conversations.find((c) => c.id === activeId) ?? null;
+  const active = activeConversation;
+  const collectionName = isSample
+    ? "Sample archive"
+    : (activeBackup?.displayName ?? activeReport?.sourceName ?? "Chat archive");
+  const collectionStatus = activeBackup ? "Saved" : "Temporary";
 
   return (
     <>
@@ -403,9 +485,10 @@ function Index() {
           activeId={activeId}
           selections={selections}
           onSelect={handleSelect}
-          onReimport={handleReimport}
-          onClear={handleClear}
+          onCloseArchive={handleCloseArchive}
+          closeArchiveLabel={installedApi ? "Back to library" : "Close archive"}
           onOpenDashboard={() => {
+            void sessionRef.current?.all().then(setDashboardConversations);
             setDashboardOpen(true);
             setMobileSidebarOpen(false);
           }}
@@ -419,7 +502,7 @@ function Index() {
         <main className="min-w-0 flex-1 overflow-hidden">
           {dashboardOpen ? (
             <ArchiveDashboard
-              conversations={conversations}
+              conversations={dashboardConversations}
               report={activeReport}
               savedBackups={savedBackups}
               onClose={() => setDashboardOpen(false)}
@@ -428,14 +511,25 @@ function Index() {
           ) : (
             <ConversationView
               conversation={active}
+              viewKey={activeBackup ? `${activeBackup.id}:${activeId}` : undefined}
               onOpenSidebar={() => setMobileSidebarOpen(true)}
               onSelectConversation={handleSelect}
-              savedName={activeBackup?.displayName}
+              collectionName={collectionName}
+              collectionStatus={collectionStatus}
               report={activeReport}
               selection={active ? (selections[active.id] ?? {}) : {}}
               onSelectionChange={(selection) => {
                 if (!active) return;
                 setSelections((prev) => ({ ...prev, [active.id]: selection }));
+                if (activeBackup)
+                  try {
+                    localStorage.setItem(
+                      `chat-replay-view:${activeBackup.id}`,
+                      JSON.stringify({ id: active.id, selection }),
+                    );
+                  } catch {
+                    /* Optional reading state. */
+                  }
                 setFocusNodeId(null);
               }}
               focusNodeId={focusNodeId}

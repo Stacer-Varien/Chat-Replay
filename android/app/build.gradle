@@ -21,8 +21,8 @@ android {
         applicationId "com.chatreplay.viewer"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 150
-        versionName "1.5.0"
+        versionCode 171
+        versionName "1.6.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -49,10 +49,20 @@ android {
             }
         }
     }
+    flavorDimensions += 'edition'
+    productFlavors {
+        standard { dimension 'edition' }
+        preview {
+            dimension 'edition'
+            applicationIdSuffix '.preview'
+            resValue 'string', 'app_name', 'Chat Replay Preview'
+            resValue 'string', 'title_activity_main', 'Chat Replay Preview'
+        }
+    }
 }
 
 gradle.taskGraph.whenReady { graph ->
-    def isReleaseBuild = graph.allTasks.any { task -> task.name == 'assembleRelease' || task.name == 'bundleRelease' }
+    def isReleaseBuild = graph.allTasks.any { task -> task.name ==~ /(?:assemble|bundle).*Release/ }
     if (isReleaseBuild && !releaseSigningConfigured) {
         throw new GradleException('Release signing is required. Set RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, and RELEASE_KEY_PASSWORD as Gradle properties or environment variables.')
     }

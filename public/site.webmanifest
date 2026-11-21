@@ -4,12 +4,12 @@
   "description": "Browse your exported ChatGPT and Gemini conversations locally.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#020817",
-  "theme_color": "#020817",
+  "background_color": "#102035",
+  "theme_color": "#102035",
   "icons": [
     {
       "src": "/icon.png",
-      "sizes": "1254x1254",
+      "sizes": "1024x1024",
       "type": "image/png",
       "purpose": "any"
     }

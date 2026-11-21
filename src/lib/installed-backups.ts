@@ -1,6 +1,9 @@
 import { Capacitor } from "@capacitor/core";
 
 import type { Conversation, ExportBackupMetadata, ImportHealthReport } from "@/lib/chatgpt-import";
+import type { ArchiveSearchIndex, SavedSearchIndex } from "@/lib/chat-search-index";
+import * as storage from "./backup-storage";
+import { clearOnlineImageCache } from "./online-images";
 import { canUseBiometricsOnAndroid, unlockWithBiometricsOnAndroid } from "@/lib/native-auth";
 import type {
   InstalledBackupApi,
@@ -10,119 +13,8 @@ import type {
   InstalledSaveResult,
 } from "@/types/installed-app";
 
-interface StoredBackup {
-  id: string;
-  backup: InstalledBackupSummary;
-  conversations: Conversation[];
-  archiveData: Blob | ArrayBuffer | null;
-  report?: ImportHealthReport | null;
-}
-
-const DB_NAME = "chat-replay";
-const STORE_NAME = "backups";
-const SUMMARY_STORE_NAME = "backup-summaries";
-const DB_VERSION = 2;
 const VALID_BACKUP_ID = /^[a-f0-9]{16,96}$/i;
 const LOCK_KEY = "chat-replay-installed-lock";
-
-let databasePromise: Promise<IDBDatabase> | null = null;
-let persistenceRequested = false;
-
-function openDatabase(): Promise<IDBDatabase> {
-  if (databasePromise) return databasePromise;
-
-  databasePromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(STORE_NAME)) {
-        database.createObjectStore(STORE_NAME, { keyPath: "id" });
-      }
-      if (!database.objectStoreNames.contains(SUMMARY_STORE_NAME)) {
-        const summaries = database.createObjectStore(SUMMARY_STORE_NAME, { keyPath: "id" });
-        const existing = request.transaction?.objectStore(STORE_NAME).openCursor();
-        if (existing) {
-          existing.onsuccess = () => {
-            const cursor = existing.result;
-            if (!cursor) return;
-            const record = cursor.value as StoredBackup;
-            if (record.backup) summaries.put(record.backup);
-            cursor.continue();
-          };
-        }
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
-      reject(request.error ?? new Error("Could not open Android app storage."));
-  });
-
-  return databasePromise;
-}
-
-async function requestPersistentStorage() {
-  if (persistenceRequested) return;
-  persistenceRequested = true;
-  try {
-    await navigator.storage?.persist?.();
-  } catch {
-    // Android WebView app storage remains usable even when persistence cannot be requested.
-  }
-}
-
-async function storeRequest<T>(
-  mode: IDBTransactionMode,
-  operation: (store: IDBObjectStore) => IDBRequest<T>,
-  storeName = STORE_NAME,
-): Promise<T> {
-  await requestPersistentStorage();
-  const database = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(storeName, mode);
-    const request = operation(transaction.objectStore(storeName));
-    let result!: T;
-
-    request.onsuccess = () => {
-      result = request.result;
-    };
-    request.onerror = () =>
-      reject(request.error ?? new Error("Android app storage request failed."));
-    transaction.oncomplete = () => resolve(result);
-    transaction.onerror = () =>
-      reject(transaction.error ?? new Error("Android app storage transaction failed."));
-    transaction.onabort = () =>
-      reject(transaction.error ?? new Error("Android app storage transaction was cancelled."));
-  });
-}
-
-async function mutateBackupStores(
-  operation: (records: IDBObjectStore, summaries: IDBObjectStore) => void,
-): Promise<void> {
-  await requestPersistentStorage();
-  const database = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction([STORE_NAME, SUMMARY_STORE_NAME], "readwrite");
-    try {
-      operation(transaction.objectStore(STORE_NAME), transaction.objectStore(SUMMARY_STORE_NAME));
-    } catch (error) {
-      transaction.abort();
-      reject(error);
-      return;
-    }
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () =>
-      reject(transaction.error ?? new Error("Android app storage failed."));
-    transaction.onabort = () =>
-      reject(transaction.error ?? new Error("Android app storage was cancelled."));
-  });
-}
-
-function putBackupRecord(record: StoredBackup): Promise<void> {
-  return mutateBackupStores((records, summaries) => {
-    records.put(record);
-    summaries.put(record.backup);
-  });
-}
 
 function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -175,7 +67,10 @@ function scrubConversationData(value: unknown): unknown {
 
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    result[key] = key === "url" ? null : scrubConversationData(item);
+    result[key] =
+      key === "url" && typeof item === "string" && item.startsWith("blob:")
+        ? null
+        : scrubConversationData(item);
   }
   return result;
 }
@@ -250,17 +145,8 @@ async function archiveIdentity(metadata: ExportBackupMetadata, archiveData: Arra
   return stableHash(archiveData);
 }
 
-async function getStoredBackup(id: string): Promise<StoredBackup | undefined> {
-  if (!VALID_BACKUP_ID.test(id)) throw new Error("Invalid backup id.");
-  return storeRequest("readonly", (store) => store.get(id.toLowerCase()));
-}
-
 async function listBackups(): Promise<InstalledBackupSummary[]> {
-  const summaries = await storeRequest<InstalledBackupSummary[]>(
-    "readonly",
-    (store) => store.getAll(),
-    SUMMARY_STORE_NAME,
-  );
+  const summaries = await storage.listSummaries();
   return summaries.sort(
     (a, b) =>
       (b.lastOpenedAt ?? b.version ?? b.importedAt ?? 0) -
@@ -269,20 +155,11 @@ async function listBackups(): Promise<InstalledBackupSummary[]> {
 }
 
 async function loadBackup(id: string): Promise<InstalledBackupPayload> {
-  const record = await getStoredBackup(id);
-  if (!record) throw new Error("This saved backup could not be found.");
-  return {
-    backup: record.backup,
-    conversations: record.conversations,
-    report: record.report ?? null,
-  };
+  return storage.readCollection(id);
 }
 
 async function loadBackupArchive(id: string): Promise<ArrayBuffer | null> {
-  const record = await getStoredBackup(id);
-  if (!record) throw new Error("This saved backup could not be found.");
-  if (record.archiveData instanceof Blob) return record.archiveData.arrayBuffer();
-  return record.archiveData;
+  return storage.readArchive(id);
 }
 
 async function saveBackup(payload: InstalledSavePayload): Promise<InstalledSaveResult> {
@@ -295,7 +172,8 @@ async function saveBackup(payload: InstalledSavePayload): Promise<InstalledSaveR
   }
 
   const id = await archiveIdentity(payload.metadata, payload.archiveData);
-  const existing = await getStoredBackup(id);
+  const saved = await storage.readSummary(id);
+  const existing = saved ? { backup: saved } : undefined;
   const version = backupVersion(payload.metadata);
   const now = nowSeconds();
   const requestedName = requestedDisplayName(payload.displayName);
@@ -303,8 +181,8 @@ async function saveBackup(payload: InstalledSavePayload): Promise<InstalledSaveR
   if (existing && version <= existing.backup.version) {
     if (requestedName && requestedName !== existing.backup.displayName) {
       existing.backup = { ...existing.backup, displayName: requestedName, updatedAt: now };
-      await putBackupRecord(existing);
     }
+    await storage.updateSummary(id, existing.backup);
     return { action: "kept-existing", backup: existing.backup };
   }
 
@@ -322,50 +200,43 @@ async function saveBackup(payload: InstalledSavePayload): Promise<InstalledSaveR
     conversationCount: payload.conversations.length,
     latestConversationUpdate: finiteNumber(payload.metadata.latestConversationUpdate),
   };
-  const record: StoredBackup = {
+  const record = {
     id,
     backup,
     conversations: scrubConversationData(payload.conversations) as Conversation[],
     archiveData: new Blob([payload.archiveData]),
     report: payload.report,
+    searchIndex: payload.searchIndex ?? null,
   };
 
-  await putBackupRecord(record);
+  await storage.storeCollection(record);
   return { action: existing ? "replaced" : "created", backup };
 }
 
+async function saveSearchIndex(id: string, searchIndex: SavedSearchIndex): Promise<void> {
+  await storage.putIndex(id, searchIndex);
+}
+
 async function renameBackup(id: string, displayName: string): Promise<InstalledBackupSummary> {
-  const existing = await getStoredBackup(id);
+  const existing = await storage.readSummary(id);
   if (!existing) throw new Error("This saved backup could not be found.");
   const requestedName = requestedDisplayName(displayName);
   if (!requestedName) throw new Error("Enter a name for this saved collection.");
-  existing.backup = { ...existing.backup, displayName: requestedName, updatedAt: nowSeconds() };
-  await putBackupRecord(existing);
-  return existing.backup;
+  return storage.updateSummary(id, { displayName: requestedName, updatedAt: nowSeconds() });
 }
 
 async function markBackupOpened(id: string): Promise<InstalledBackupSummary> {
-  const existing = await getStoredBackup(id);
-  if (!existing) throw new Error("This saved backup could not be found.");
-  existing.backup = { ...existing.backup, lastOpenedAt: nowSeconds() };
-  await putBackupRecord(existing);
-  return existing.backup;
+  return storage.updateSummary(id, { lastOpenedAt: nowSeconds() });
 }
 
 async function deleteBackup(id: string): Promise<{ ok: true }> {
   if (!VALID_BACKUP_ID.test(id)) throw new Error("Invalid backup id.");
-  await mutateBackupStores((records, summaries) => {
-    records.delete(id.toLowerCase());
-    summaries.delete(id.toLowerCase());
-  });
+  await storage.removeCollection(id.toLowerCase());
   return { ok: true };
 }
 
 async function clearBackups(): Promise<void> {
-  await mutateBackupStores((records, summaries) => {
-    records.clear();
-    summaries.clear();
-  });
+  await storage.clearCollections();
 }
 
 async function getLockState() {
@@ -409,6 +280,7 @@ async function disableLock(passcode: string) {
 async function resetLockAndBackups(): Promise<{ ok: true }> {
   writeLock(null);
   await clearBackups();
+  await clearOnlineImageCache();
   return { ok: true };
 }
 
@@ -418,12 +290,14 @@ async function unlockWithBiometric(): Promise<{ ok: true }> {
   return unlockWithBiometricsOnAndroid();
 }
 
-const androidBackupApi: InstalledBackupApi = {
+export const androidBackupApi: InstalledBackupApi = {
   platform: "android",
   listBackups,
   loadBackup,
+  loadConversation: storage.readConversation,
   loadBackupArchive,
   saveBackup,
+  saveSearchIndex,
   renameBackup,
   markBackupOpened,
   deleteBackup,
@@ -437,7 +311,22 @@ const androidBackupApi: InstalledBackupApi = {
 
 export function getInstalledBackupApi(): InstalledBackupApi | null {
   if (typeof window === "undefined") return null;
-  if (window.chatReplayDesktop) return window.chatReplayDesktop;
+  if (window.chatReplayDesktop) {
+    const api = window.chatReplayDesktop;
+    return {
+      ...api,
+      saveBackup: async (payload) =>
+        api.saveBackup({
+          ...payload,
+          searchIndex:
+            payload.searchIndex instanceof Blob
+              ? await payload.searchIndex.arrayBuffer()
+              : payload.searchIndex,
+        }),
+      saveSearchIndex: async (id, index) =>
+        api.saveSearchIndex(id, index instanceof Blob ? await index.arrayBuffer() : index),
+    };
+  }
   if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android")
     return androidBackupApi;
   return null;

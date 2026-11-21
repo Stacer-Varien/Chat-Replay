@@ -5,12 +5,21 @@ const http = require("node:http");
 const path = require("node:path");
 const { Readable } = require("node:stream");
 const { pathToFileURL } = require("node:url");
+const { createOnlineImageCache } = require("./online-image-cache.cjs");
+let onlineImageCache;
+function images() {
+  return (onlineImageCache ??= createOnlineImageCache(
+    path.join(app.getPath("userData"), "online-images"),
+  ));
+}
 
 const IPC = {
   listBackups: "chat-replay:list-backups",
   loadBackup: "chat-replay:load-backup",
+  loadConversation: "chat-replay:load-conversation",
   loadBackupArchive: "chat-replay:load-backup-archive",
   saveBackup: "chat-replay:save-backup",
+  saveSearchIndex: "chat-replay:save-search-index",
   renameBackup: "chat-replay:rename-backup",
   markBackupOpened: "chat-replay:mark-backup-opened",
   deleteBackup: "chat-replay:delete-backup",
@@ -247,7 +256,10 @@ function scrubConversationData(value) {
 
   const out = {};
   for (const [key, item] of Object.entries(value)) {
-    out[key] = key === "url" ? null : scrubConversationData(item);
+    out[key] =
+      key === "url" && typeof item === "string" && item.startsWith("blob:")
+        ? null
+        : scrubConversationData(item);
   }
   return out;
 }
@@ -314,15 +326,64 @@ async function listBackups() {
 async function loadBackup(_event, id) {
   const normalized = assertBackupId(id);
   const dir = backupDir(normalized);
-  const [manifest, conversations] = await Promise.all([
+  const [manifest, conversations, searchIndex] = await Promise.all([
     readJson(path.join(dir, "manifest.json")),
-    readJson(path.join(dir, "conversations.json")),
+    ensureCollectionDocuments(normalized),
+    fs
+      .readFile(path.join(dir, "search-index.gz"))
+      .then((bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
+      .catch(() => null),
   ]);
   return {
     backup: summaryFromManifest(manifest),
     conversations,
     report: manifest.report ?? null,
+    searchIndex,
   };
+}
+
+function documentName(id) {
+  return crypto.createHash("sha256").update(String(id)).digest("hex") + ".json";
+}
+function conversationSummary(conversation) {
+  return {
+    ...conversation,
+    nodes: {},
+    messageCount: conversation.messageCount ?? Object.keys(conversation.nodes).length,
+  };
+}
+const migrations = new Map();
+async function ensureCollectionDocuments(id) {
+  const dir = backupDir(id);
+  try {
+    return await readJson(path.join(dir, "collection-summary.json"));
+  } catch {}
+  if (migrations.has(id)) return migrations.get(id);
+  const migration = (async () => {
+    const conversations = await readJson(path.join(dir, "conversations.json"));
+    const docs = path.join(dir, "documents");
+    await fs.mkdir(docs, { recursive: true });
+    for (const conversation of conversations)
+      await writeJson(path.join(docs, documentName(conversation.id)), conversation);
+    const summaries = conversations.map(conversationSummary);
+    await writeJson(path.join(dir, "collection-summary.json.pending"), summaries);
+    await fs.rename(
+      path.join(dir, "collection-summary.json.pending"),
+      path.join(dir, "collection-summary.json"),
+    );
+    return summaries;
+  })();
+  migrations.set(id, migration);
+  try {
+    return await migration;
+  } finally {
+    migrations.delete(id);
+  }
+}
+async function loadConversation(_event, id, conversationId) {
+  const normalized = assertBackupId(id);
+  await ensureCollectionDocuments(normalized);
+  return readJson(path.join(backupDir(normalized), "documents", documentName(conversationId)));
 }
 
 async function loadBackupArchive(_event, id) {
@@ -404,6 +465,7 @@ async function saveBackup(_event, payload) {
       sourceLastModified: finiteNumber(metadata.sourceLastModified),
     },
     report: payload.report ?? null,
+    storageVersion: 2,
   };
 
   await fs.rm(tempDir, { recursive: true, force: true });
@@ -412,8 +474,17 @@ async function saveBackup(_event, payload) {
     await Promise.all([
       fs.writeFile(path.join(tempDir, archiveFileName), archiveData),
       writeJson(path.join(tempDir, "manifest.json"), manifest),
-      writeJson(path.join(tempDir, "conversations.json"), conversations),
+      writeJson(
+        path.join(tempDir, "collection-summary.json"),
+        conversations.map(conversationSummary),
+      ),
+      ...(payload.searchIndex instanceof ArrayBuffer
+        ? [fs.writeFile(path.join(tempDir, "search-index.gz"), Buffer.from(payload.searchIndex))]
+        : []),
     ]);
+    await fs.mkdir(path.join(tempDir, "documents"), { recursive: true });
+    for (const conversation of conversations)
+      await writeJson(path.join(tempDir, "documents", documentName(conversation.id)), conversation);
 
     await fs.rm(targetDir, { recursive: true, force: true });
     await fs.rename(tempDir, targetDir);
@@ -426,6 +497,18 @@ async function saveBackup(_event, payload) {
     action: existing ? "replaced" : "created",
     backup: summaryFromManifest(manifest),
   };
+}
+
+async function saveSearchIndex(_event, id, searchIndex) {
+  const normalized = assertBackupId(id);
+  if (!(searchIndex instanceof ArrayBuffer)) {
+    throw new Error("The saved search index is not valid.");
+  }
+  const dir = backupDir(normalized);
+  const manifest = await readManifest(normalized);
+  if (!manifest) throw new Error("This saved backup could not be found.");
+  await fs.writeFile(path.join(dir, "search-index.gz.pending"), Buffer.from(searchIndex));
+  await fs.rename(path.join(dir, "search-index.gz.pending"), path.join(dir, "search-index.gz"));
 }
 
 async function renameBackup(_event, id, displayName) {
@@ -516,14 +599,27 @@ async function disableLock(_event, passcode) {
 
 async function resetLockAndBackups() {
   await Promise.all([fs.rm(backupRoot(), { recursive: true, force: true }), writeLock(null)]);
+  await images().setEnabled(false);
+  await images().clear();
   return { ok: true };
 }
 
 function registerIpc() {
+  for (const [name, method] of Object.entries({
+    read: "read",
+    write: "write",
+    clear: "clear",
+    stats: "stats",
+    enabled: "enabled",
+    "set-enabled": "setEnabled",
+  }))
+    ipcMain.handle(`chat-replay:images:${name}`, (_event, value) => images()[method](value));
   ipcMain.handle(IPC.listBackups, listBackups);
   ipcMain.handle(IPC.loadBackup, loadBackup);
+  ipcMain.handle(IPC.loadConversation, loadConversation);
   ipcMain.handle(IPC.loadBackupArchive, loadBackupArchive);
   ipcMain.handle(IPC.saveBackup, saveBackup);
+  ipcMain.handle(IPC.saveSearchIndex, saveSearchIndex);
   ipcMain.handle(IPC.renameBackup, renameBackup);
   ipcMain.handle(IPC.markBackupOpened, markBackupOpened);
   ipcMain.handle(IPC.deleteBackup, deleteBackup);
@@ -552,9 +648,26 @@ async function createWindow() {
   });
   win.setMenu(null);
 
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    if (url === "about:blank" && frameName === "chat-replay-print") {
+      return { action: "allow", overrideBrowserWindowOptions: { autoHideMenuBar: true } };
+    }
     shell.openExternal(url);
     return { action: "deny" };
+  });
+  win.webContents.on("did-create-window", (child) => {
+    child.setMenu(null);
+    const openPrintLink = (url) => {
+      if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url);
+    };
+    child.webContents.on("will-navigate", (event, url) => {
+      event.preventDefault();
+      openPrintLink(url);
+    });
+    child.webContents.setWindowOpenHandler(({ url }) => {
+      openPrintLink(url);
+      return { action: "deny" };
+    });
   });
 
   win.webContents.on("will-navigate", (event, url) => {

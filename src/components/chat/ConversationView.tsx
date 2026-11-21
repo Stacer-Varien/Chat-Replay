@@ -2,9 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Conversation, ImportHealthReport } from "@/lib/chatgpt-import";
 import { computeChain } from "@/lib/chatgpt-import";
 import { Message } from "./Message";
+import { ConversationMessages } from "./ConversationMessages";
+import { resolveAttachment } from "@/lib/collection-session";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { canUseNativePrint, printHtmlOnAndroid } from "@/lib/native-print";
-import { Activity, Bot, Download, GitBranch, Menu, Route, Save } from "lucide-react";
+import { OnlineImageSettingsButton } from "./OnlineImageSettings";
+import { PrintOnlineImagesContext } from "@/lib/online-image-context";
+import { cachedImagesForPrint } from "@/lib/online-images";
+import {
+  Activity,
+  Bot,
+  Download,
+  GitBranch,
+  Menu,
+  Route,
+  Save,
+  MoreHorizontal,
+} from "lucide-react";
 
 function fmtDate(ts: number | null) {
   if (!ts) return "";
@@ -20,11 +34,13 @@ interface ConversationViewProps {
   onOpenSidebar?: () => void;
   onSelectConversation?: (id: string) => void;
   onSave?: () => void;
-  savedName?: string;
+  collectionName: string;
+  collectionStatus: "Saved" | "Temporary";
   selection: Record<string, number>;
   onSelectionChange: (selection: Record<string, number>) => void;
   focusNodeId?: string | null;
   report?: ImportHealthReport | null;
+  viewKey?: string;
 }
 
 export function ConversationView({
@@ -32,16 +48,17 @@ export function ConversationView({
   onOpenSidebar,
   onSelectConversation,
   onSave,
-  savedName,
+  collectionName,
+  collectionStatus,
   selection,
   onSelectionChange,
   focusNodeId,
   report,
+  viewKey,
 }: ConversationViewProps) {
   const [assistantOnly, setAssistantOnly] = useState(false);
   const [branchMapOpen, setBranchMapOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
-  const printRef = useRef<HTMLDivElement>(null);
 
   const rawChain = useMemo(() => {
     if (!conversation) return [];
@@ -52,17 +69,10 @@ export function ConversationView({
     if (!assistantOnly) return rawChain;
     return rawChain.filter((item) => item.node.role === "assistant");
   }, [rawChain, assistantOnly]);
-
   useEffect(() => {
-    if (!focusNodeId) return;
-    const handle = window.requestAnimationFrame(() => {
-      document.getElementById(`message-${focusNodeId}`)?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-    });
-    return () => window.cancelAnimationFrame(handle);
-  }, [focusNodeId, rawChain]);
+    if (focusNodeId && conversation?.nodes[focusNodeId]?.role !== "assistant")
+      setAssistantOnly(false);
+  }, [focusNodeId, conversation]);
 
   if (!conversation) {
     return (
@@ -104,8 +114,8 @@ export function ConversationView({
     onSelectionChange({ ...selection, [key]: index });
   }
 
-  function exportPdf() {
-    if (!printRef.current || !conversation) return;
+  async function exportPdf() {
+    if (!conversation) return;
     if (
       !window.confirm(
         "Privacy check: this PDF can include private prompts, responses, and attachments. Review the destination before sharing. Continue to export?",
@@ -113,6 +123,36 @@ export function ConversationView({
     ) {
       return;
     }
+    const target = window.chatReplayDesktop ? "chat-replay-print" : "_blank";
+    const win = canUseNativePrint() ? null : window.open("", target, "width=900,height=1000");
+    if (win) win.document.write("<p>Preparing your complete conversation…</p>");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const printable = await Promise.all(
+      chain.map(async (item) => ({
+        ...item,
+        node: {
+          ...item.node,
+          attachments: await Promise.all(
+            item.node.attachments.map(async (a) => ({
+              ...a,
+              url: a.url?.startsWith("asset:")
+                ? await resolveAttachment(a.url).catch(() => null)
+                : a.url,
+            })),
+          ),
+        },
+      })),
+    );
+    const onlineImages = await cachedImagesForPrint(chain.map((item) => item.node.text));
+    const content = renderToStaticMarkup(
+      <PrintOnlineImagesContext.Provider value={onlineImages}>
+        <div>
+          {printable.map((item) => (
+            <Message key={item.node.id} item={item} onPrev={() => {}} onNext={() => {}} />
+          ))}
+        </div>
+      </PrintOnlineImagesContext.Provider>,
+    );
     const styles = Array.from(document.styleSheets)
       .map((sheet) => {
         try {
@@ -127,6 +167,7 @@ export function ConversationView({
     const escapeHtml = (s: string) =>
       s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!);
     const title = conversation.title || "Conversation";
+    const cssTitle = title.replace(/["\\<>\r\n\f]/g, (c) => `\\${c.charCodeAt(0).toString(16)} `);
     const printableHtml = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${styles}</style>
 <style>
   @page {
@@ -138,7 +179,7 @@ export function ConversationView({
       color: #888;
     }
     @bottom-left {
-      content: "${escapeHtml(title).replace(/"/g, '\\"')}";
+      content: "${cssTitle}";
       font-family: ui-sans-serif, system-ui, sans-serif;
       font-size: 10px;
       color: #888;
@@ -236,7 +277,7 @@ export function ConversationView({
   <h1>${escapeHtml(title)}</h1>
   <div class="meta">${chain.length} messages · ${fmtDate(conversation.createTime)}${assistantOnly ? " · Assistant only" : ""}</div>
 </div>
-${printRef.current.innerHTML}
+${content}
 </body></html>`;
 
     if (canUseNativePrint()) {
@@ -246,8 +287,8 @@ ${printRef.current.innerHTML}
       return;
     }
 
-    const win = window.open("", "_blank", "width=900,height=1000");
     if (!win) return;
+    win.document.open();
     win.document.write(printableHtml);
     win.document.close();
     const doPrint = () => {
@@ -261,12 +302,12 @@ ${printRef.current.innerHTML}
   return (
     <div className="flex h-full flex-col">
       <header
-        className="border-b bg-background/80 px-3 py-3 backdrop-blur sm:px-4 lg:px-6"
+        className="relative z-20 shrink-0 border-b bg-background/80 px-3 py-3 backdrop-blur sm:px-4 lg:px-6"
         style={{
           paddingTop: "var(--safe-area-inset-top, env(safe-area-inset-top, 0px))",
         }}
       >
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-start gap-2 sm:gap-3">
             {onOpenSidebar && (
               <button
@@ -279,10 +320,22 @@ ${printRef.current.innerHTML}
               </button>
             )}
             <div className="min-w-0 flex-1">
-              <h1 className="truncate text-sm font-semibold sm:text-base">{conversation.title}</h1>
+              <h1
+                className="truncate text-base font-semibold sm:text-lg"
+                title={conversation.title}
+              >
+                {conversation.title.replace(/^(?:Branch\s*·\s*)+/i, "")}
+              </h1>
               <div className="mt-1 text-xs text-muted-foreground">
                 {chain.length} messages · {fmtDate(conversation.createTime)}
-                {savedName && ` · Saved as ${savedName}`}
+              </div>
+              <div className="mt-1 hidden min-w-0 items-center gap-2 text-xs text-muted-foreground sm:flex">
+                <span className="min-w-0 truncate" title={collectionName}>
+                  {collectionName}
+                </span>
+                <span className="shrink-0 rounded-full border bg-muted/50 px-2 py-0.5 font-medium">
+                  {collectionStatus}
+                </span>
               </div>
               {(conversation.branchSourceId || conversation.branchChildren?.length) && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
@@ -317,12 +370,12 @@ ${printRef.current.innerHTML}
               )}
             </div>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            <ThemeToggle />
+          <div className="flex shrink-0 items-center justify-end gap-2">
             {onSave && (
               <button
                 type="button"
                 onClick={onSave}
+                aria-label="Save chats"
                 className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-primary/40 bg-primary/5 px-2.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
                 title="Save these chats in the installed app"
               >
@@ -332,62 +385,85 @@ ${printRef.current.innerHTML}
             )}
             <button
               type="button"
-              onClick={exportPdf}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent"
+              onClick={() => exportPdf()}
+              className="hidden h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent sm:inline-flex"
               title="Export current view to PDF"
             >
               <Download className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Export PDF</span>
             </button>
-            <button
-              type="button"
-              onClick={() => setBranchMapOpen((open) => !open)}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent"
-              title="Show branch map"
-            >
-              <Route className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Branch map</span>
-            </button>
-            {report && (
-              <button
-                type="button"
-                onClick={() => setReportOpen((open) => !open)}
-                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent"
-                title="Show import health report"
+            <details className="reader-menu relative">
+              <summary
+                className="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-xl border hover:bg-accent"
+                aria-label="More conversation options"
               >
-                <Activity className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Import report</span>
-              </button>
-            )}
-            <label className="flex h-9 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent">
-              <input
-                type="checkbox"
-                className="sr-only"
-                checked={assistantOnly}
-                onChange={(e) => setAssistantOnly(e.target.checked)}
-              />
-              <Bot className="h-3.5 w-3.5" />
-              <span
-                className={
-                  assistantOnly
-                    ? "hidden font-medium text-foreground sm:inline"
-                    : "hidden text-muted-foreground sm:inline"
-                }
-              >
-                Assistant only
-              </span>
-              <span
-                className={`relative inline-block h-4 w-7 rounded-full transition-colors ${
-                  assistantOnly ? "bg-primary" : "bg-muted-foreground/30"
-                }`}
-              >
-                <span
-                  className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${
-                    assistantOnly ? "translate-x-3" : "translate-x-0"
-                  }`}
-                />
-              </span>
-            </label>
+                <MoreHorizontal className="h-5 w-5" />
+              </summary>
+              <div className="absolute right-0 top-12 z-30 flex w-56 flex-col gap-2 rounded-xl border bg-popover p-3 shadow-xl">
+                <div className="border-b pb-2 text-xs sm:hidden">
+                  <div className="truncate font-medium" title={collectionName}>
+                    {collectionName}
+                  </div>
+                  <div className="mt-1 text-muted-foreground">{collectionStatus} collection</div>
+                </div>
+                <ThemeToggle />
+                <OnlineImageSettingsButton className="inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-accent" />
+                <button
+                  type="button"
+                  onClick={() => void exportPdf()}
+                  className="rounded-lg border px-3 py-2 text-left text-sm sm:hidden"
+                >
+                  Export PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBranchMapOpen((open) => !open)}
+                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent"
+                  title="Show branch map"
+                >
+                  <Route className="h-3.5 w-3.5" />
+                  <span>Branch map</span>
+                </button>
+                {report && (
+                  <button
+                    type="button"
+                    onClick={() => setReportOpen((open) => !open)}
+                    className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent"
+                    title="Show import health report"
+                  >
+                    <Activity className="h-3.5 w-3.5" />
+                    <span>Import report</span>
+                  </button>
+                )}
+                <label className="flex h-9 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs transition-colors hover:bg-accent">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={assistantOnly}
+                    onChange={(e) => setAssistantOnly(e.target.checked)}
+                  />
+                  <Bot className="h-3.5 w-3.5" />
+                  <span
+                    className={
+                      assistantOnly ? "font-medium text-foreground" : "text-muted-foreground"
+                    }
+                  >
+                    Assistant only
+                  </span>
+                  <span
+                    className={`relative inline-block h-4 w-7 rounded-full transition-colors ${
+                      assistantOnly ? "bg-primary" : "bg-muted-foreground/30"
+                    }`}
+                  >
+                    <span
+                      className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${
+                        assistantOnly ? "translate-x-3" : "translate-x-0"
+                      }`}
+                    />
+                  </span>
+                </label>
+              </div>
+            </details>
           </div>
         </div>
       </header>
@@ -509,20 +585,13 @@ ${printRef.current.innerHTML}
           </div>
         </section>
       )}
-      <div className="flex-1 overflow-y-auto">
-        <div ref={printRef} className="divide-y divide-border/40">
-          {chain.map((item) => (
-            <Message
-              key={item.node.id}
-              item={item}
-              highlighted={focusNodeId === item.node.id}
-              onPrev={() => updateSel(item.selectionKey, -1, item.total)}
-              onNext={() => updateSel(item.selectionKey, +1, item.total)}
-            />
-          ))}
-        </div>
-        <div className="h-24" />
-      </div>
+      <ConversationMessages
+        key={conversation.id}
+        chain={chain}
+        focusNodeId={focusNodeId}
+        viewKey={viewKey}
+        onChange={updateSel}
+      />
     </div>
   );
 }

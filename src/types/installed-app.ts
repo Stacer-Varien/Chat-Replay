@@ -1,4 +1,5 @@
 import type { Conversation, ExportBackupMetadata, ImportHealthReport } from "@/lib/chatgpt-import";
+import type { SavedSearchIndex } from "@/lib/chat-search-index";
 
 export interface InstalledBackupSummary {
   id: string;
@@ -19,6 +20,7 @@ export interface InstalledBackupPayload {
   backup: InstalledBackupSummary;
   conversations: Conversation[];
   report: ImportHealthReport | null;
+  searchIndex: SavedSearchIndex | null;
 }
 
 export interface InstalledSavePayload {
@@ -29,6 +31,7 @@ export interface InstalledSavePayload {
   report: ImportHealthReport;
   permissionConfirmed: boolean;
   metadata: ExportBackupMetadata;
+  searchIndex?: SavedSearchIndex;
 }
 
 export interface InstalledSaveResult {
@@ -46,8 +49,10 @@ export interface InstalledBackupApi {
   platform: "electron" | "android";
   listBackups: () => Promise<InstalledBackupSummary[]>;
   loadBackup: (id: string) => Promise<InstalledBackupPayload>;
+  loadConversation: (id: string, conversationId: string) => Promise<Conversation>;
   loadBackupArchive: (id: string) => Promise<ArrayBuffer | null>;
   saveBackup: (payload: InstalledSavePayload) => Promise<InstalledSaveResult>;
+  saveSearchIndex: (id: string, searchIndex: SavedSearchIndex) => Promise<void>;
   renameBackup: (id: string, displayName: string) => Promise<InstalledBackupSummary>;
   markBackupOpened: (id: string) => Promise<InstalledBackupSummary>;
   deleteBackup: (id: string) => Promise<{ ok: true }>;
